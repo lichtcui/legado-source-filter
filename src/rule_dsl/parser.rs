@@ -98,13 +98,19 @@ fn split_fallback(s: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let bytes = s.as_bytes();
-    for i in 0..bytes.len().saturating_sub(1) {
+    let mut i = 0;
+    while i < bytes.len().saturating_sub(1) {
         if bytes[i] == b'|' && bytes[i + 1] == b'|' {
-            let part = s[start..i].trim();
-            if !part.is_empty() {
-                parts.push(part);
+            if start <= i {
+                let part = s[start..i].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
             }
             start = i + 2;
+            i += 2; // skip past || so ||| doesn't cause start > i
+        } else {
+            i += 1;
         }
     }
     if start < s.len() {

@@ -46,6 +46,11 @@ enum Commands {
         #[arg(long)]
         retry_missed: bool,
 
+        /// Number of test rounds. Failed sources are retried each round.
+        /// A source passes if it succeeds in any round (handles network flakiness).
+        #[arg(long, default_value = "1")]
+        rounds: u32,
+
         /// Limit to first N sources (for quick tests)
         #[arg(long)]
         limit: Option<usize>,
@@ -57,13 +62,16 @@ enum Commands {
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with_env_filter(EnvFilter::from_default_env()
+            .add_directive("html5ever=off".parse().unwrap())
+            .add_directive(tracing::Level::ERROR.into()))
         .init();
 
     let cli = Cli::parse();
 
     match &cli.command {
         Commands::Preflight => {
+            ensure_fresh_source(&cli.input, &cli.output)?;
             tracing::info!("Loading sources from {}", cli.input.display());
             let file = std::fs::File::open(&cli.input)?;
             let reader = std::io::BufReader::new(file);
@@ -96,8 +104,9 @@ fn main() -> anyhow::Result<()> {
             println!("  Pure URL:        {}", b.pure_url);
         }
         Commands::Test {
-            concurrency, timeout, no_node, force, retry_missed, limit, config: config_path,
+            concurrency, timeout, no_node, force, retry_missed, limit, config: config_path, rounds,
         } => {
+            ensure_fresh_source(&cli.input, &cli.output)?;
             let config_content = std::fs::read_to_string(config_path)?;
             let config_toml: toml::Value = config_content.parse()?;
 
@@ -152,17 +161,79 @@ fn main() -> anyhow::Result<()> {
                 eligible
             };
 
-            tracing::info!("Starting test: concurrency={}, timeout={}s", test_config.concurrency, test_config.timeout_secs);
-
             let rt = tokio::runtime::Runtime::new()?;
-            let summary = rt.block_on(tester::run(eligible.clone(), test_config, &cli.output))?;
 
-            println!("\n=== Test Summary ===");
-            println!("Total tested:  {}", summary.total);
-            println!("Passed:        {}", summary.passed);
-            println!("Failed:        {}", summary.failed);
-            println!("JS API (skip): {}", summary.js_api.len());
+            let rounds = (*rounds).max(1);
+            for round in 1..=rounds {
+                let mut round_config = test_config.clone();
+                if round > 1 {
+                    round_config.retry_missed = true;
+                }
 
+                // For rounds > 1, only retry network_error sources (not builder_error or no_results)
+                let sources_to_test = if round > 1 {
+                    let db_path = cli.output.join("test_cache.db");
+                    filter_retryable(&eligible, &db_path)
+                } else {
+                    eligible.clone()
+                };
+
+                tracing::info!(
+                    "Starting round {}/{}: sources={}, concurrency={}, timeout={}s",
+                    round, rounds, sources_to_test.len(), round_config.concurrency, round_config.timeout_secs
+                );
+
+                let summary = rt.block_on(tester::run(sources_to_test, round_config, &cli.output))?;
+
+                println!("\n=== Round {}/{} Summary ===", round, rounds);
+                println!("Total:  {}", summary.total);
+                println!("Passed: {}", summary.passed);
+                println!("Failed: {}", summary.failed);
+                println!("JS API: {}", summary.js_api.len());
+
+                // Mark dead domains before the next round
+                if round < rounds {
+                    let db_path = cli.output.join("test_cache.db");
+                    mark_dead_domains(&eligible, &db_path);
+                }
+            }
+
+            // ── Final cumulative summary across all rounds ──
+            {
+                let db_path = cli.output.join("test_cache.db");
+                let cache = db::TestCache::new(&db_path).ok();
+                if let Some(ref cache) = cache {
+                    let final_passed = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "passed")
+                    }).count();
+                    let final_failed = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "failed")
+                    }).count();
+                    let final_js_api = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "js_api")
+                    }).count();
+                    let final_dead = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "dead_domain")
+                    }).count();
+                    let final_skipped = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "skipped")
+                    }).count();
+                    println!("\n=== Final Summary ({} rounds) ===", rounds);
+                    println!("Passed:      {} ({:.1}%)", final_passed, final_passed as f64 / eligible.len() as f64 * 100.0);
+                    println!("Dead domain: {} ({:.1}%)", final_dead, final_dead as f64 / eligible.len() as f64 * 100.0);
+                    println!("Failed:      {} ({:.1}%)", final_failed, final_failed as f64 / eligible.len() as f64 * 100.0);
+                    println!("JS API:      {}", final_js_api);
+                    println!("Skipped:     {}", final_skipped);
+                    println!("Untested:    {}", eligible.len() - final_passed - final_dead - final_failed - final_js_api - final_skipped);
+                }
+            }
+
+            // ── Generate final output from cache ──
             let db_path = cli.output.join("test_cache.db");
             let cache = db::TestCache::new(&db_path).ok();
 
@@ -198,14 +269,152 @@ fn main() -> anyhow::Result<()> {
                     std::fs::write(&missed_path, serde_json::to_string_pretty(&missed_sources)?)?;
                     tracing::info!("Wrote {} missed sources", missed_sources.len());
                 }
-            }
 
-            if !summary.js_api.is_empty() {
-                let js_api_path = cli.output.join("js_api.json");
-                std::fs::write(&js_api_path, serde_json::to_string_pretty(&summary.js_api)?)?;
+                // Also write JS API sources (read from cache, reliable across rounds)
+                let js_api_sources: Vec<_> = eligible.iter()
+                    .filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName)
+                            .ok()
+                            .flatten()
+                            .map_or(false, |(st, _)| st == "js_api")
+                    })
+                    .cloned()
+                    .collect();
+
+                if !js_api_sources.is_empty() {
+                    let js_api_path = cli.output.join("js_api.json");
+                    std::fs::write(&js_api_path, serde_json::to_string_pretty(&js_api_sources)?)?;
+                    tracing::info!("Wrote {} JS API sources", js_api_sources.len());
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Analyze cache after a round: if every tested source on a domain has "failed"
+/// (none passed), mark all its failed sources as "dead_domain" so subsequent
+/// rounds skip them — retrying a dead site is wasted effort.
+fn mark_dead_domains(eligible: &[types::BookSource], db_path: &std::path::Path) {
+    let Ok(cache) = db::TestCache::new(db_path) else { return; };
+
+    let mut domain_has_passed = std::collections::HashSet::new();
+
+    // First pass: find domains with at least one passed source
+    for src in eligible {
+        let Ok(Some((status, _))) = cache.check(&src.bookSourceUrl, &src.bookSourceName) else { continue; };
+        let domain = src.bookSourceUrl.split('/').nth(2).unwrap_or("").to_lowercase();
+        if domain.is_empty() { continue; }
+        if status == "passed" {
+            domain_has_passed.insert(domain);
+        }
+    }
+
+    // Second pass: mark failed sources on dead domains
+    for src in eligible {
+        let domain = src.bookSourceUrl.split('/').nth(2).unwrap_or("").to_lowercase();
+        if domain.is_empty() || domain_has_passed.contains(&domain) { continue; }
+
+        let Ok(Some((status, reason))) = cache.check(&src.bookSourceUrl, &src.bookSourceName) else { continue; };
+        if status == "failed" {
+            let _ = cache.save(&src.bookSourceUrl, &src.bookSourceName, "dead_domain", reason.as_deref(), 0);
+        }
+    }
+}
+
+/// For rounds > 1, only include sources worth retrying:
+/// - Not yet cached (untested)
+/// - Cached as "failed" with reason "network_error" (transient, could succeed next time)
+/// All other statuses (passed, js_api, dead_domain, builder_error, no_results) are skipped.
+fn filter_retryable(eligible: &[types::BookSource], db_path: &std::path::Path) -> Vec<types::BookSource> {
+    let Ok(cache) = db::TestCache::new(db_path) else { return eligible.to_vec(); };
+
+    eligible.iter()
+        .filter(|src| {
+            let Ok(Some((status, reason))) = cache.check(&src.bookSourceUrl, &src.bookSourceName) else {
+                return true; // Not in cache yet → include
+            };
+            status == "failed" && reason.as_deref() == Some("network_error")
+        })
+        .cloned()
+        .collect()
+}
+
+/// Ensure the local book source JSON is up to date.
+/// Fetches the aoaostar index page, discovers the latest "全量书源" URL,
+/// downloads if the remote filename has changed, and clears stale caches.
+fn ensure_fresh_source(input_path: &std::path::Path, output_dir: &std::path::Path) -> anyhow::Result<()> {
+    let source_url_path = output_dir.join(".source_url");
+
+    // Fetch aoaostar index page (small, ~15 KB)
+    let html = fetch_text("https://legado.aoaostar.com")?;
+    let remote_url = discover_source_url(&html)?;
+    let remote_name = remote_url.rsplit('/').next().unwrap_or("");
+
+    // Compare with the last downloaded URL
+    let last_url = std::fs::read_to_string(&source_url_path).ok();
+    if let Some(ref last) = last_url {
+        if last.trim() == remote_url && input_path.exists() {
+            tracing::info!("书源已是最新: {}", remote_name);
+            return Ok(());
+        }
+    }
+
+    // Download new JSON to a temp file, then atomically replace
+    tracing::info!("发现新书源: {}，正在下载...", remote_name);
+    let temp_path = input_path.with_extension("tmp");
+    download_to_file(&remote_url, &temp_path)?;
+    std::fs::rename(&temp_path, input_path)?;
+    std::fs::write(&source_url_path, &remote_url)?;
+
+    tracing::info!("书源已更新 ({}), 清除旧缓存", remote_name);
+    clear_output_cache(output_dir);
+    Ok(())
+}
+
+fn fetch_text(url: &str) -> anyhow::Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {} fetching {}", resp.status(), url);
+    }
+    Ok(resp.text()?)
+}
+
+fn download_to_file(url: &str, path: &std::path::Path) -> anyhow::Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let resp = client.get(url).send()?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {} downloading {}", resp.status(), url);
+    }
+    let bytes = resp.bytes()?;
+    std::fs::write(path, &bytes)?;
+    Ok(())
+}
+
+fn discover_source_url(html: &str) -> anyhow::Result<String> {
+    let section_start = html.find("全量书源")
+        .ok_or_else(|| anyhow::anyhow!("未在页面中找到「全量书源」信息"))?;
+    let section = &html[section_start..];
+    let link_start = section.find("<a href=\"")
+        .ok_or_else(|| anyhow::anyhow!("未找到书源链接"))?;
+    let url_start = link_start + "<a href=\"".len();
+    let url_end = section[url_start..].find('\"')
+        .ok_or_else(|| anyhow::anyhow!("书源链接格式错误"))?;
+    Ok(section[url_start..url_start + url_end].to_string())
+}
+
+fn clear_output_cache(output_dir: &std::path::Path) {
+    for entry in &["test_cache.db", "eligible.json", "filtered.json", "missed.json",
+                   "skipped.json", "explore_only.json", "js_api.json", "report.txt"] {
+        let path = output_dir.join(entry);
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }

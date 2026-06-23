@@ -11,6 +11,15 @@ use crate::rule_dsl;
 use crate::search_url;
 use crate::types::*;
 
+/// Increments an AtomicUsize on drop — ensures progress is counted
+/// even when a task panics.
+struct IncOnDrop(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for IncOnDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone)]
 pub struct TestConfig {
     pub concurrency: usize,
@@ -48,6 +57,22 @@ pub async fn run(
     let passed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let js_api = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let total = eligible.len();
+    let completed_progress = completed.clone();
+    let progress_handle = tokio::spawn(async move {
+        let mut last = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let current = completed_progress.load(std::sync::atomic::Ordering::Relaxed);
+            if current >= total { break; }
+            if current > last {
+                println!("Progress: {}/{} ({:.0}%)", current, total, current as f64 / total as f64 * 100.0);
+                last = current;
+            }
+        }
+    });
 
     for source in eligible {
         let client = client.clone();
@@ -56,10 +81,12 @@ pub async fn run(
         let passed = passed.clone();
         let failed = failed.clone();
         let js_api = js_api.clone();
+        let completed = completed.clone();
         let config = config.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
+            let _inc_on_drop = IncOnDrop(completed.clone());
 
             // Each task opens its own cache connection
             let cache = TestCache::new(&db_path).ok();
@@ -74,6 +101,9 @@ pub async fn run(
                         }
                         "failed" if config.retry_missed => {
                             // Re-test failed sources
+                        }
+                        "dead_domain" => {
+                            return;
                         }
                         "js_api" => {
                             return;
@@ -110,11 +140,15 @@ pub async fn run(
             let base_url = source.bookSourceUrl.clone();
             let js_code = su.to_string();
 
+            let mut all_spec_failed = true;
+            let mut any_network_error = false;
+
             for keyword in &keywords {
                 // Try Rust-side request builder first (handles templates and JS L1)
                 let spec = search_url::build_request(&source, keyword);
 
                 let spec = if let Some(s) = spec {
+                    all_spec_failed = false;
                     s
                 } else if needs_js {
                     // Fall back to JS polyfill for L2/L3 sources
@@ -127,6 +161,7 @@ pub async fn run(
 
                     match resolved_url {
                         Some(url) if !url.is_empty() => {
+                            all_spec_failed = false;
                             crate::search_url::RequestSpec {
                                 url,
                                 method: "GET".to_string(),
@@ -153,6 +188,7 @@ pub async fn run(
                             Ok(r) => r,
                             Err(e2) => {
                                 warn!("{}: request failed after retry: {}", source.bookSourceName, e2);
+                                any_network_error = true;
                                 continue;
                             }
                         }
@@ -198,15 +234,22 @@ pub async fn run(
                 }
             }
 
-            // All keywords failed
-            info!("{}: FAILED ({} keywords tried)", source.bookSourceName, keywords.len());
+            // All keywords failed — classify the reason
+            let (fail_reason, retry_count) = if all_spec_failed {
+                ("builder_error", 0u32)
+            } else if any_network_error {
+                ("network_error", 1)
+            } else {
+                ("no_results", 1)
+            };
+            info!("{}: FAILED (reason={})", source.bookSourceName, fail_reason);
             if let Some(ref cache) = cache {
                 let _ = cache.save(
                     &source.bookSourceUrl,
                     &source.bookSourceName,
                     "failed",
-                    Some("no_results"),
-                    1,
+                    Some(fail_reason),
+                    retry_count,
                 );
             }
             failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -217,6 +260,7 @@ pub async fn run(
     for handle in handles {
         let _ = handle.await;
     }
+    progress_handle.await.unwrap_or(());
 
     let passed_count = passed.load(std::sync::atomic::Ordering::Relaxed);
     let failed_count = failed.load(std::sync::atomic::Ordering::Relaxed);
