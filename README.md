@@ -1,6 +1,6 @@
 # Legado 书源筛选工具
 
-从 `data/b778fe6b.json`（3911 个书源）中自动筛选**当前可用的文字书源**。
+自动从 [legado.aoaostar.com](https://legado.aoaostar.com) 获取最新书源列表，通过预检过滤和并发搜索测试，筛选出**当前可用的文字书源**，直接导入 [Legado](https://github.com/gedoor/legado) 阅读 APP。
 
 ## 使用方法
 
@@ -14,7 +14,7 @@ cargo run -- test
 # 3. 快速测试（前 10 个）
 cargo run -- test --limit 10 --concurrency 5
 
-# 4. 一行代码：预检 + 5 轮重试
+# 4. 一行命令：预检 + 5 轮重试
 cargo run -- preflight && cargo run -- test --rounds 5
 ```
 
@@ -30,11 +30,17 @@ cargo run -- preflight && cargo run -- test --rounds 5
 | `--rounds N` | 测试轮数，失败源每轮重试（默认 1） |
 | `--no-node` | 跳过 JS 源（无需安装 Node.js） |
 
+## 工作流程
+
+1. **自动更新** — 启动时从 legado.aoaostar.com 获取最新"全量书源" JSON（本地有缓存则增量更新，服务器不可用时回退到缓存）
+2. **预检（preflight）** — 过滤非文字源、禁用源、URL 无效、无搜索能力的源
+3. **搜索测试（test）** — 每源最多试 3 个关键词，50 并发请求，结果缓存到 SQLite 支持断点续测
+
 ## 输出
 
 | 文件 | 说明 |
 |------|------|
-| `output/eligible.json` | 待测书源（2957 个） |
+| `output/eligible.json` | 待测书源 |
 | `output/filtered.json` | 可用的书源，直接导入 Legado |
 | `output/missed.json` | 测试失败 |
 | `output/skipped.json` | 预检跳过 |
@@ -42,8 +48,8 @@ cargo run -- preflight && cargo run -- test --rounds 5
 
 ## 技术栈
 
-- **语言**: Rust (tokio + reqwest)
-- **HTML 解析**: scraper (Servo CSS 引擎)
+- **语言**: Rust（tokio + reqwest）
+- **HTML 解析**: scraper（Servo CSS 引擎）
 - **编码探测**: chardetng + encoding_rs
 - **JS 执行**: Node.js polyfill（可选依赖）
 - **缓存**: rusqlite（支持断点续测）

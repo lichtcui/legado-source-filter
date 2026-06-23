@@ -15,7 +15,8 @@ cargo run -- test --limit 10 --concurrency 5  # 快速测试前 10 个
 
 ## 管道流程
 
-1. `preflight` — 3911 个源 → 2957 个文字+启用源。排除非文字/禁用、URL 无效、无搜索能力的源。
+0. `自动更新` — 从 legado.aoaostar.com 获取最新全量书源 JSON（本地缓存，增量更新）
+1. `preflight` — ~3911 个源 → ~2957 个文字+启用源。排除非文字/禁用、URL 无效、无搜索能力的源。
 2. `test` — 每源最多试 3 个关键词（checkKeyWord → 通用关键词 → config.toml 书）。50 并发请求。结果缓存在 SQLite 中，支持断点续测。
 
 ## 架构
@@ -44,7 +45,7 @@ src/
 
 ## 关键数据
 
-- 输入：`data/b778fe6b.json`（3911 个源，21MB）
+- 输入：从 legado.aoaostar.com 自动获取最新全量书源（~3911 个，~21MB），本地 `data/` 目录缓存
 - 文字+启用：3680 → 预检 → 2957 个待测（683 跳过、46 仅发现）
 - searchUrl 类型：2785 模板 + 129 @js + 21 `<js>` + 22 纯 URL
 - 输出：`output/filtered.json`（约 640 个可用源，导入 Legado）
