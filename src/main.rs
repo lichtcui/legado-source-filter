@@ -344,18 +344,31 @@ fn filter_retryable(eligible: &[types::BookSource], db_path: &std::path::Path) -
 /// Ensure the local book source JSON is up to date.
 /// Fetches the aoaostar index page, discovers the latest "全量书源" URL,
 /// downloads if the remote filename has changed, and clears stale caches.
+/// If the remote is unreachable, silently falls back to the local file.
 fn ensure_fresh_source(input_path: &std::path::Path, output_dir: &std::path::Path) -> anyhow::Result<()> {
     let source_url_path = output_dir.join(".source_url");
 
-    // Fetch aoaostar index page (small, ~15 KB)
-    let html = fetch_text("https://legado.aoaostar.com")?;
+    // If we already have a local file, try remote update but don't fail if unreachable
+    let has_local = input_path.exists();
+
+    let html = match fetch_text("https://legado.aoaostar.com") {
+        Ok(h) => h,
+        Err(e) => {
+            if has_local {
+                println!("无法连接书源服务器，使用本地缓存");
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
+
     let remote_url = discover_source_url(&html)?;
     let remote_name = remote_url.rsplit('/').next().unwrap_or("");
 
     // Compare with the last downloaded URL
     let last_url = std::fs::read_to_string(&source_url_path).ok();
     if let Some(ref last) = last_url {
-        if last.trim() == remote_url && input_path.exists() {
+        if last.trim() == remote_url && has_local {
             tracing::info!("书源已是最新: {}", remote_name);
             return Ok(());
         }

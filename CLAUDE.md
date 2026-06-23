@@ -56,6 +56,7 @@ src/
 | `--force` | 忽略缓存，全部重新测试 |
 | `--retry-missed` | 仅重测之前失败的源 |
 | `--limit N` | 只测前 N 个源 |
+| `--rounds N` | 测试轮数，失败源每轮重试（默认 1） |
 | `--no-node` | 跳过 JS 源 |
 | `--concurrency N` | 并发数，默认 50 |
 
