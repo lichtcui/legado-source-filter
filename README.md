@@ -13,6 +13,9 @@ cargo run -- test
 
 # 3. 快速测试（前 10 个）
 cargo run -- test --limit 10 --concurrency 5
+
+# 4. 一行代码：预检 + 5 轮重试
+cargo run -- preflight && cargo run -- test --rounds 5
 ```
 
 ### 常用参数
