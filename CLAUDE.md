@@ -9,8 +9,12 @@ cargo build                              # 编译
 cargo test                               # 全部测试（33 个）
 cargo test --test integration            # 集成测试
 cargo run -- preflight                   # 静态预检
-cargo run -- test                        # 全量搜索测试（~30-45 分钟）
-cargo run -- test --limit 10 --concurrency 5  # 快速测试前 10 个
+cargo run -- full --rounds 5             # 一键下载+预检+5轮测试（~1-2 小时）
+cargo run -- test --rounds 5             # 仅测试阶段（需先运行 preflight）
+cargo run -- test --limit 10             # 快速测试前 10 个
+cargo run -- --json status               # 查看管道进度（JSON 格式）
+cargo run -- status                      # 查看管道进度（人类可读）
+cargo run -- --json full --limit 5       # 一键运行+JSON 输出（AI 友好）
 ```
 
 ## 管道流程
@@ -18,6 +22,25 @@ cargo run -- test --limit 10 --concurrency 5  # 快速测试前 10 个
 0. `自动更新` — 从 legado.aoaostar.com 获取最新全量书源 JSON（本地缓存，增量更新）
 1. `preflight` — ~3911 个源 → ~2957 个文字+启用源。排除非文字/禁用、URL 无效、无搜索能力的源。
 2. `test` — 每源最多试 3 个关键词（checkKeyWord → 通用关键词 → config.toml 书）。50 并发请求。结果缓存在 SQLite 中，支持断点续测。
+
+## 自动续跑
+
+全量测试（2957 源 × 5 轮）约需 1-2 小时，可能因网络/超时中断。SQLite 缓存支持断点续测：
+
+```bash
+# 首次启动（自动清除旧缓存，从头跑）
+cargo run -- full --rounds 5
+
+# 如果超时或中断：查进度，然后续跑
+cargo run -- --json status              # 看已完成/剩余多少
+cargo run -- full --rounds 5            # 续跑——已有缓存的源直接跳过
+```
+
+关键原则：
+- `full` 命令**默认清除旧缓存**，确保从头重新测试。续跑用 `test` 子命令
+- SQLite 缓存（`output/test_cache.db`）保存每源最终状态，重复执行只测未完成项
+- `--rounds N` 的后几轮只重试 `network_error` 源，不重试 `passed` / `dead_domain` / `no_results`
+- 用 `--json` flag 输出结构化结果，方便 AI 解析进度和状态
 
 ## 架构
 
@@ -54,6 +77,11 @@ src/
 
 | 参数 | 说明 |
 |------|------|
+| `full` | 一键 preflight + test（推荐） |
+| `preflight` | 仅静态预检 |
+| `test` | 仅搜索测试（需先 preflight） |
+| `status` | 查看当前管道进度（支持 `--json`） |
+| `--json` | 全局 flag，输出 JSON Lines 到 stdout（AI 友好） |
 | `--force` | 忽略缓存，全部重新测试 |
 | `--retry-missed` | 仅重测之前失败的源 |
 | `--limit N` | 只测前 N 个源 |

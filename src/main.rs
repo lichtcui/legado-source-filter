@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use std::io::Write;
+
 use clap::{Parser, Subcommand};
 use legado_source_filter::*;
 use tracing_subscriber::EnvFilter;
@@ -11,6 +13,10 @@ use tracing_subscriber::EnvFilter;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Emit machine-readable JSON Lines to stdout
+    #[arg(long, global = true)]
+    json: bool,
 
     /// Path to the book sources JSON file
     #[arg(short, long, default_value = "data/b778fe6b.json")]
@@ -58,54 +64,176 @@ enum Commands {
         #[arg(long, default_value = "data/config.toml")]
         config: PathBuf,
     },
+
+    /// Show current pipeline status from cache (no network)
+    Status,
+
+    /// One-shot: preflight + test with N rounds
+    Full {
+        #[arg(short, long, default_value = "50")]
+        concurrency: usize,
+
+        #[arg(short, long, default_value = "15")]
+        timeout: u64,
+
+        /// Skip JS sources (no node required)
+        #[arg(long)]
+        no_node: bool,
+
+        /// Re-test all sources, ignoring cache
+        #[arg(long)]
+        force: bool,
+
+        /// Number of test rounds. Failed sources are retried each round.
+        #[arg(long, default_value = "1")]
+        rounds: u32,
+
+        /// Limit to first N sources (for quick tests)
+        #[arg(long)]
+        limit: Option<usize>,
+
+        #[arg(long, default_value = "data/config.toml")]
+        config: PathBuf,
+    },
+}
+
+/// Emit a JSON event to stdout if --json is enabled.
+fn json_event(cli: &Cli, value: serde_json::Value) {
+    if !cli.json {
+        return;
+    }
+    println!("{}", serde_json::to_string(&value).unwrap());
+    let _ = std::io::stdout().flush();
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env()
-            .add_directive("html5ever=off".parse().unwrap())
-            .add_directive(tracing::Level::ERROR.into()))
-        .init();
-
     let cli = Cli::parse();
 
+    if !cli.json {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env()
+                .add_directive("html5ever=off".parse().unwrap())
+                .add_directive(tracing::Level::ERROR.into()))
+            .init();
+    }
+
     match &cli.command {
+        Commands::Status => {
+            let db_path = cli.output.join("test_cache.db");
+            let eligible_path = cli.output.join("eligible.json");
+
+            let total = std::fs::read_to_string(&eligible_path).ok()
+                .and_then(|s| serde_json::from_str::<Vec<types::BookSource>>(&s).ok())
+                .map(|v| v.len());
+
+            if let Some((n_total, cache)) = total.and_then(|t| {
+                db::TestCache::new(&db_path).ok().map(|c| (t, c))
+            }) {
+                let rows = cache.summary().unwrap_or_default();
+                let tested: usize = rows.iter().map(|(_, c)| c).sum();
+                let mut counts = std::collections::BTreeMap::new();
+                for (s, c) in &rows {
+                    counts.insert(s.clone(), *c);
+                }
+
+                json_event(&cli, serde_json::json!({
+                    "event": "status",
+                    "preflight": "done",
+                    "total": n_total,
+                    "tested": tested,
+                    "remaining": n_total.saturating_sub(tested),
+                    "details": counts,
+                }));
+
+                if !cli.json {
+                    println!("=== Pipeline Status ===");
+                    println!("Preflight: done ({} eligible)", n_total);
+                    println!("Tested:    {} / {}", tested, n_total);
+                    for (status, count) in &rows {
+                        println!("  {:<16} {}", status, count);
+                    }
+                    let remaining = n_total - tested;
+                    println!("Remaining: {}", remaining);
+                }
+            } else if eligible_path.exists() {
+                let n_total = std::fs::read_to_string(&eligible_path).ok()
+                    .and_then(|s| serde_json::from_str::<Vec<types::BookSource>>(&s).ok())
+                    .map_or(0, |v| v.len());
+
+                json_event(&cli, serde_json::json!({
+                    "event": "status",
+                    "preflight": "done",
+                    "total": n_total,
+                    "tested": 0,
+                    "remaining": n_total,
+                }));
+
+                if !cli.json {
+                    println!("=== Pipeline Status ===");
+                    println!("Preflight: done ({} eligible)", n_total);
+                    println!("Test:      not started yet");
+                }
+            } else {
+                json_event(&cli, serde_json::json!({
+                    "event": "status",
+                    "preflight": "not_run",
+                    "total": 0,
+                }));
+
+                if !cli.json {
+                    println!("=== Pipeline Status ===");
+                    println!("Preflight: not run yet — run `preflight` first");
+                }
+            }
+        }
+
         Commands::Preflight => {
+            json_event(&cli, serde_json::json!({"event": "phase", "phase": "preflight", "status": "started"}));
+
             ensure_fresh_source(&cli.input, &cli.output)?;
-            tracing::info!("Loading sources from {}", cli.input.display());
             let file = std::fs::File::open(&cli.input)?;
             let reader = std::io::BufReader::new(file);
             let sources: Vec<types::BookSource> = serde_json::from_reader(reader)?;
-            tracing::info!("Loaded {} sources", sources.len());
 
-            tracing::info!("Running preflight...");
             let output = preflight::run(sources);
 
-            tracing::info!(
-                "Preflight complete: {} eligible, {} skipped, {} explore-only",
-                output.eligible.len(),
-                output.skipped.len(),
-                output.explore_only.len()
-            );
+            reporter::write_outputs(&cli.output, &output, cli.json)?;
 
-            reporter::write_outputs(&cli.output, &output)?;
+            json_event(&cli, serde_json::json!({
+                "event": "preflight_summary",
+                "total_input": output.total_input,
+                "excluded": output.excluded,
+                "text_enabled": output.text_enabled,
+                "skipped": output.skipped.len(),
+                "explore_only": output.explore_only.len(),
+                "eligible": output.eligible.len(),
+                "breakdown": {
+                    "template": output.breakdown.template,
+                    "js_prefix": output.breakdown.js_prefix,
+                    "js_block": output.breakdown.js_block,
+                    "pure_url": output.breakdown.pure_url,
+                },
+            }));
 
-            println!("\n=== Preflight Summary ===");
-            println!("Total input:      {}", output.total_input);
-            println!("Excluded (non-text/disabled): {}", output.excluded);
-            println!("Text + enabled:   {}", output.text_enabled);
-            println!("Skipped:          {}", output.skipped.len());
-            println!("Explore only:     {}", output.explore_only.len());
-            println!("Eligible (test):  {}", output.eligible.len());
-            let b = &output.breakdown;
-            println!("  {{key}} template: {}", b.template);
-            println!("  @js: prefix:     {}", b.js_prefix);
-            println!("  <js> block:      {}", b.js_block);
-            println!("  Pure URL:        {}", b.pure_url);
+            if !cli.json {
+                println!("\n=== Preflight Summary ===");
+                println!("Total input:      {}", output.total_input);
+                println!("Excluded (non-text/disabled): {}", output.excluded);
+                println!("Text + enabled:   {}", output.text_enabled);
+                println!("Skipped:          {}", output.skipped.len());
+                println!("Explore only:     {}", output.explore_only.len());
+                println!("Eligible (test):  {}", output.eligible.len());
+                let b = &output.breakdown;
+                println!("  {{key}} template: {}", b.template);
+                println!("  @js: prefix:     {}", b.js_prefix);
+                println!("  <js> block:      {}", b.js_block);
+                println!("  Pure URL:        {}", b.pure_url);
+            }
         }
         Commands::Test {
             concurrency, timeout, no_node, force, retry_missed, limit, config: config_path, rounds,
         } => {
+            json_event(&cli, serde_json::json!({"event": "phase", "phase": "test", "status": "started"}));
             ensure_fresh_source(&cli.input, &cli.output)?;
             let config_content = std::fs::read_to_string(config_path)?;
             let config_toml: toml::Value = config_content.parse()?;
@@ -185,11 +313,23 @@ fn main() -> anyhow::Result<()> {
 
                 let summary = rt.block_on(tester::run(sources_to_test, round_config, &cli.output))?;
 
-                println!("\n=== Round {}/{} Summary ===", round, rounds);
-                println!("Total:  {}", summary.total);
-                println!("Passed: {}", summary.passed);
-                println!("Failed: {}", summary.failed);
-                println!("JS API: {}", summary.js_api.len());
+                json_event(&cli, serde_json::json!({
+                    "event": "round_summary",
+                    "round": round,
+                    "total_rounds": rounds,
+                    "total": summary.total,
+                    "passed": summary.passed,
+                    "failed": summary.failed,
+                    "js_api": summary.js_api.len(),
+                }));
+
+                if !cli.json {
+                    println!("\n=== Round {}/{} Summary ===", round, rounds);
+                    println!("Total:  {}", summary.total);
+                    println!("Passed: {}", summary.passed);
+                    println!("Failed: {}", summary.failed);
+                    println!("JS API: {}", summary.js_api.len());
+                }
 
                 // Mark dead domains before the next round
                 if round < rounds {
@@ -223,13 +363,47 @@ fn main() -> anyhow::Result<()> {
                         cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
                             .map_or(false, |(st, _)| st == "skipped")
                     }).count();
-                    println!("\n=== Final Summary ({} rounds) ===", rounds);
-                    println!("Passed:      {} ({:.1}%)", final_passed, final_passed as f64 / eligible.len() as f64 * 100.0);
-                    println!("Dead domain: {} ({:.1}%)", final_dead, final_dead as f64 / eligible.len() as f64 * 100.0);
-                    println!("Failed:      {} ({:.1}%)", final_failed, final_failed as f64 / eligible.len() as f64 * 100.0);
-                    println!("JS API:      {}", final_js_api);
-                    println!("Skipped:     {}", final_skipped);
-                    println!("Untested:    {}", eligible.len() - final_passed - final_dead - final_failed - final_js_api - final_skipped);
+                    let untested = eligible.len() - final_passed - final_dead - final_failed - final_js_api - final_skipped;
+
+                    json_event(&cli, serde_json::json!({
+                        "event": "final_summary",
+                        "rounds": rounds,
+                        "total": eligible.len(),
+                        "passed": final_passed,
+                        "dead_domain": final_dead,
+                        "failed": final_failed,
+                        "js_api": final_js_api,
+                        "skipped": final_skipped,
+                        "untested": untested,
+                    }));
+
+                    // Write report.json alongside the text report
+                    if cli.json {
+                        let report_json = serde_json::json!({
+                            "summary": {
+                                "rounds": rounds,
+                                "total": eligible.len(),
+                                "passed": final_passed,
+                                "dead_domain": final_dead,
+                                "failed": final_failed,
+                                "js_api": final_js_api,
+                                "skipped": final_skipped,
+                                "untested": untested,
+                            }
+                        });
+                        let report_path = cli.output.join("report.json");
+                        let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report_json)?);
+                    }
+
+                    if !cli.json {
+                        println!("\n=== Final Summary ({} rounds) ===", rounds);
+                        println!("Passed:      {} ({:.1}%)", final_passed, final_passed as f64 / eligible.len() as f64 * 100.0);
+                        println!("Dead domain: {} ({:.1}%)", final_dead, final_dead as f64 / eligible.len() as f64 * 100.0);
+                        println!("Failed:      {} ({:.1}%)", final_failed, final_failed as f64 / eligible.len() as f64 * 100.0);
+                        println!("JS API:      {}", final_js_api);
+                        println!("Skipped:     {}", final_skipped);
+                        println!("Untested:    {}", untested);
+                    }
                 }
             }
 
@@ -285,6 +459,263 @@ fn main() -> anyhow::Result<()> {
                     let js_api_path = cli.output.join("js_api.json");
                     std::fs::write(&js_api_path, serde_json::to_string_pretty(&js_api_sources)?)?;
                     tracing::info!("Wrote {} JS API sources", js_api_sources.len());
+                }
+            }
+        }
+
+        Commands::Full {
+            concurrency, timeout, no_node, force, limit, config: config_path, rounds,
+        } => {
+            json_event(&cli, serde_json::json!({"event": "phase", "phase": "full", "status": "started"}));
+
+            // ── Phase 1: Preflight ──
+            json_event(&cli, serde_json::json!({"event": "phase", "phase": "preflight", "status": "started"}));
+            ensure_fresh_source(&cli.input, &cli.output)?;
+            let file = std::fs::File::open(&cli.input)?;
+            let reader = std::io::BufReader::new(file);
+            let sources: Vec<types::BookSource> = serde_json::from_reader(reader)?;
+            let preflight_out = preflight::run(sources);
+            reporter::write_outputs(&cli.output, &preflight_out, cli.json)?;
+
+            json_event(&cli, serde_json::json!({
+                "event": "preflight_summary",
+                "total_input": preflight_out.total_input,
+                "eligible": preflight_out.eligible.len(),
+                "skipped": preflight_out.skipped.len(),
+                "explore_only": preflight_out.explore_only.len(),
+            }));
+
+            if !cli.json {
+                println!("\n=== Preflight ===");
+                println!("Eligible: {}", preflight_out.eligible.len());
+            }
+
+            if preflight_out.eligible.is_empty() {
+                anyhow::bail!("No eligible sources after preflight");
+            }
+
+            // full 命令默认从头跑：清除旧测试缓存和衍生输出
+            let cache_path = cli.output.join("test_cache.db");
+            if cache_path.exists() {
+                std::fs::remove_file(&cache_path)?;
+            }
+            for f in &["filtered.json", "missed.json", "js_api.json"] {
+                let p = cli.output.join(f);
+                if p.exists() {
+                    std::fs::remove_file(&p)?;
+                }
+            }
+
+            // ── Phase 2: Test config from config.toml ──
+            let config_content = std::fs::read_to_string(config_path)?;
+            let config_toml: toml::Value = config_content.parse()?;
+
+            let mut test_books = Vec::new();
+            if let Some(searches) = config_toml.get("search").and_then(|v| v.as_array()) {
+                for entry in searches {
+                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !name.is_empty() {
+                        test_books.push(tester::TestBook {
+                            name,
+                            author: entry.get("author").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            domain_hint: None,
+                        });
+                    }
+                }
+            }
+
+            let test_config = tester::TestConfig {
+                concurrency: *concurrency,
+                timeout_secs: *timeout,
+                test_books,
+                generic_keywords: vec!["重生".into(), "系统".into(), "穿越".into()],
+                no_node: *no_node,
+                force: *force,
+                retry_missed: false,
+            };
+
+            let eligible = if let Some(n) = limit {
+                let n = (*n).min(preflight_out.eligible.len());
+                preflight_out.eligible.into_iter().take(n).collect()
+            } else {
+                preflight_out.eligible
+            };
+
+            // ── Phase 3: Test rounds ──
+            json_event(&cli, serde_json::json!({"event": "phase", "phase": "test", "status": "started"}));
+
+            let rt = tokio::runtime::Runtime::new()?;
+            let rounds = (*rounds).max(1);
+
+            // Need to also clear cache if --force is set (preflight cleared outputs above, but re-check)
+            if *force {
+                let cache_path = cli.output.join("test_cache.db");
+                if cache_path.exists() {
+                    std::fs::remove_file(&cache_path)?;
+                }
+            }
+
+            for round in 1..=rounds {
+                let mut round_config = test_config.clone();
+                if round > 1 {
+                    round_config.retry_missed = true;
+                }
+
+                let sources_to_test = if round > 1 {
+                    let db_path = cli.output.join("test_cache.db");
+                    filter_retryable(&eligible, &db_path)
+                } else {
+                    eligible.clone()
+                };
+
+                if sources_to_test.is_empty() {
+                    json_event(&cli, serde_json::json!({
+                        "event": "round_summary",
+                        "round": round,
+                        "total_rounds": rounds,
+                        "total": 0, "passed": 0, "failed": 0, "js_api": 0,
+                        "note": "nothing to retry",
+                    }));
+                    if !cli.json {
+                        println!("\n=== Round {}/{} === nothing to retry", round, rounds);
+                    }
+                    break;
+                }
+
+                let summary = rt.block_on(tester::run(sources_to_test, round_config, &cli.output))?;
+
+                json_event(&cli, serde_json::json!({
+                    "event": "round_summary",
+                    "round": round,
+                    "total_rounds": rounds,
+                    "total": summary.total,
+                    "passed": summary.passed,
+                    "failed": summary.failed,
+                    "js_api": summary.js_api.len(),
+                }));
+
+                if !cli.json {
+                    println!("\n=== Round {}/{} Summary ===", round, rounds);
+                    println!("Total:  {}", summary.total);
+                    println!("Passed: {}", summary.passed);
+                    println!("Failed: {}", summary.failed);
+                    println!("JS API: {}", summary.js_api.len());
+                }
+
+                if round < rounds {
+                    let db_path = cli.output.join("test_cache.db");
+                    mark_dead_domains(&eligible, &db_path);
+                }
+            }
+
+            // ── Final cumulative summary ──
+            {
+                let db_path = cli.output.join("test_cache.db");
+                let cache = db::TestCache::new(&db_path).ok();
+                if let Some(ref cache) = cache {
+                    let final_passed = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "passed")
+                    }).count();
+                    let final_failed = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "failed")
+                    }).count();
+                    let final_js_api = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "js_api")
+                    }).count();
+                    let final_dead = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "dead_domain")
+                    }).count();
+                    let final_skipped = eligible.iter().filter(|s| {
+                        cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                            .map_or(false, |(st, _)| st == "skipped")
+                    }).count();
+                    let untested = eligible.len() - final_passed - final_dead - final_failed - final_js_api - final_skipped;
+
+                    json_event(&cli, serde_json::json!({
+                        "event": "final_summary",
+                        "rounds": rounds,
+                        "total": eligible.len(),
+                        "passed": final_passed,
+                        "dead_domain": final_dead,
+                        "failed": final_failed,
+                        "js_api": final_js_api,
+                        "skipped": final_skipped,
+                        "untested": untested,
+                    }));
+
+                    if cli.json {
+                        let report_json = serde_json::json!({
+                            "summary": {
+                                "rounds": rounds,
+                                "total": eligible.len(),
+                                "passed": final_passed,
+                                "dead_domain": final_dead,
+                                "failed": final_failed,
+                                "js_api": final_js_api,
+                                "skipped": final_skipped,
+                                "untested": untested,
+                            }
+                        });
+                        let report_path = cli.output.join("report.json");
+                        let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report_json)?);
+                    }
+
+                    if !cli.json {
+                        println!("\n=== Final Summary ({} rounds) ===", rounds);
+                        println!("Passed:      {} ({:.1}%)", final_passed, final_passed as f64 / eligible.len() as f64 * 100.0);
+                        println!("Dead domain: {} ({:.1}%)", final_dead, final_dead as f64 / eligible.len() as f64 * 100.0);
+                        println!("Failed:      {} ({:.1}%)", final_failed, final_failed as f64 / eligible.len() as f64 * 100.0);
+                        println!("JS API:      {}", final_js_api);
+                        println!("Skipped:     {}", final_skipped);
+                        println!("Untested:    {}", untested);
+                    }
+                }
+            }
+
+            // ── Write filtered/missed/js_api output files ──
+            {
+                let db_path = cli.output.join("test_cache.db");
+                let cache = db::TestCache::new(&db_path).ok();
+                if let Some(ref cache) = cache {
+                    let passed_sources: Vec<_> = eligible.iter()
+                        .filter(|s| {
+                            cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                                .map_or(false, |(st, _)| st == "passed")
+                        })
+                        .cloned()
+                        .collect();
+                    if !passed_sources.is_empty() {
+                        let filtered_path = cli.output.join("filtered.json");
+                        std::fs::write(&filtered_path, serde_json::to_string_pretty(&passed_sources)?)?;
+                    }
+
+                    let missed_sources: Vec<_> = eligible.iter()
+                        .filter(|s| {
+                            cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                                .map_or(false, |(st, _)| st == "failed" || st == "skipped")
+                        })
+                        .cloned()
+                        .collect();
+                    if !missed_sources.is_empty() {
+                        let missed_path = cli.output.join("missed.json");
+                        std::fs::write(&missed_path, serde_json::to_string_pretty(&missed_sources)?)?;
+                    }
+
+                    let js_api_sources: Vec<_> = eligible.iter()
+                        .filter(|s| {
+                            cache.check(&s.bookSourceUrl, &s.bookSourceName).ok().flatten()
+                                .map_or(false, |(st, _)| st == "js_api")
+                        })
+                        .cloned()
+                        .collect();
+                    if !js_api_sources.is_empty() {
+                        let js_api_path = cli.output.join("js_api.json");
+                        std::fs::write(&js_api_path, serde_json::to_string_pretty(&js_api_sources)?)?;
+                    }
                 }
             }
         }

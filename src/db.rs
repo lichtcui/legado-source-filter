@@ -38,6 +38,23 @@ impl TestCache {
         }
     }
 
+    /// Returns per-status counts from the test cache.
+    pub fn summary(&self) -> SqlResult<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status, COUNT(*) FROM test_results GROUP BY status"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let status: String = row.get(0)?;
+            let count: usize = row.get(1)?;
+            Ok((status, count))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
     pub fn save(&self, url: &str, name: &str, status: &str, reason: Option<&str>, retry_count: u32) -> SqlResult<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

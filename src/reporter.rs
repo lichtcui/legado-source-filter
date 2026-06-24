@@ -7,6 +7,7 @@ use crate::types::*;
 pub fn write_outputs(
     output_dir: &Path,
     output: &PreflightOutput,
+    json_output: bool,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(output_dir)?;
 
@@ -73,6 +74,38 @@ pub fn write_outputs(
     writeln!(report, "  纯 URL:        {}", b.pure_url)?;
     writeln!(report, "  占位符:        {}", b.placeholder)?;
     writeln!(report, "  合计:          {}", b.template + b.js_prefix + b.js_block + b.pure_url + b.placeholder)?;
+
+    // ── report.json (structured, only in JSON mode) ──
+    if json_output {
+        use std::collections::HashMap;
+        let mut skip_counts: HashMap<&str, usize> = HashMap::new();
+        for (_, reason) in &output.skipped {
+            let key = serde_json::to_string(reason).unwrap_or_default();
+            *skip_counts.entry(Box::leak(key.into_boxed_str())).or_insert(0) += 1;
+        }
+        let skip_detail: serde_json::Value = skip_counts.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+
+        let report_json = serde_json::json!({
+            "summary": {
+                "total_input": output.total_input,
+                "excluded": output.excluded,
+                "text_enabled": output.text_enabled,
+                "eligible": output.eligible.len(),
+                "skipped": output.skipped.len(),
+                "explore_only": output.explore_only.len(),
+            },
+            "skip_detail": skip_detail,
+            "breakdown": {
+                "template": output.breakdown.template,
+                "js_prefix": output.breakdown.js_prefix,
+                "js_block": output.breakdown.js_block,
+                "pure_url": output.breakdown.pure_url,
+                "placeholder": output.breakdown.placeholder,
+            },
+        });
+        let json_path = output_dir.join("report.json");
+        fs::write(&json_path, serde_json::to_string_pretty(&report_json)?)?;
+    }
 
     Ok(())
 }
