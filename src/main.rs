@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand};
 use legado_source_filter::*;
 use tracing_subscriber::EnvFilter;
 
+const DEFAULT_CONFIG: &str = include_str!("../data/config.toml");
+
 #[derive(Parser)]
 #[command(name = "legado-source-filter", about = "筛选 Legado 可用书源")]
 struct Cli {
@@ -61,8 +63,9 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
 
-        #[arg(long, default_value = "data/config.toml")]
-        config: PathBuf,
+        /// Path to config.toml (optional; built-in defaults used if not specified)
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 
     /// Show current pipeline status from cache (no network)
@@ -92,8 +95,9 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
 
-        #[arg(long, default_value = "data/config.toml")]
-        config: PathBuf,
+        /// Path to config.toml (optional; built-in defaults used if not specified)
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -235,8 +239,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             json_event(&cli, serde_json::json!({"event": "phase", "phase": "test", "status": "started"}));
             ensure_fresh_source(&cli.input, &cli.output)?;
-            let config_content = std::fs::read_to_string(config_path)?;
-            let config_toml: toml::Value = config_content.parse()?;
+            let config_toml = load_config(config_path)?;
 
             let mut test_books = Vec::new();
             if let Some(searches) = config_toml.get("search").and_then(|v| v.as_array()) {
@@ -507,8 +510,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             // ── Phase 2: Test config from config.toml ──
-            let config_content = std::fs::read_to_string(config_path)?;
-            let config_toml: toml::Value = config_content.parse()?;
+            let config_toml = load_config(config_path)?;
 
             let mut test_books = Vec::new();
             if let Some(searches) = config_toml.get("search").and_then(|v| v.as_array()) {
@@ -779,6 +781,14 @@ fn filter_retryable(eligible: &[types::BookSource], db_path: &std::path::Path) -
 fn ensure_fresh_source(input_path: &std::path::Path, output_dir: &std::path::Path) -> anyhow::Result<()> {
     let source_url_path = output_dir.join(".source_url");
 
+    // Ensure data/ and output/ directories exist (for cargo install scenario)
+    if let Some(parent) = input_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::create_dir_all(output_dir)?;
+
     // If we already have a local file, try remote update but don't fail if unreachable
     let has_local = input_path.exists();
 
@@ -861,4 +871,19 @@ fn clear_output_cache(output_dir: &std::path::Path) {
             let _ = std::fs::remove_file(&path);
         }
     }
+}
+
+/// Load config.toml: from explicit path, default `data/config.toml`, or embedded default.
+fn load_config(config: &Option<PathBuf>) -> anyhow::Result<toml::Value> {
+    let content = if let Some(path) = config {
+        std::fs::read_to_string(path)?
+    } else {
+        let default_path = PathBuf::from("data/config.toml");
+        if default_path.exists() {
+            std::fs::read_to_string(&default_path)?
+        } else {
+            DEFAULT_CONFIG.to_string()
+        }
+    };
+    Ok(content.parse()?)
 }
