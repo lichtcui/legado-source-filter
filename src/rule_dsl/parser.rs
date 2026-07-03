@@ -159,14 +159,14 @@ fn tokenize_at_chain(s: &str) -> Vec<RuleToken> {
         if i == 0 {
             // First part: locator (may include index)
             let (loc, idx) = split_index(p);
-            tokens.push(parse_locator(&loc));
+            tokens.push(parse_locator(loc));
             if let Some(n) = idx {
                 tokens.push(RuleToken::Index(n));
             }
         } else {
             // @-prefixed part
             let (annot, idx) = split_index(p);
-            tokens.push(parse_annotation(&annot));
+            tokens.push(parse_annotation(annot));
             if let Some(n) = idx {
                 tokens.push(RuleToken::Index(n));
             }
@@ -192,28 +192,25 @@ fn split_index(s: &str) -> (&str, Option<usize>) {
         digit_end -= 1;
     }
 
-    if digit_end > 0 && digit_end < len && (bytes[digit_end - 1] == b'.' || bytes[digit_end - 1] == b'!') {
-        if let Ok(num) = s[digit_end..].parse::<usize>() {
+    if digit_end > 0 && digit_end < len && (bytes[digit_end - 1] == b'.' || bytes[digit_end - 1] == b'!')
+        && let Ok(num) = s[digit_end..].parse::<usize>() {
             return (&s[..digit_end - 1], Some(num));
         }
-    }
     (s, None)
 }
 
 fn parse_locator(s: &str) -> RuleToken {
-    if s.starts_with("class.") {
-        RuleToken::CssClass(s[6..].to_string())
-    } else if s.starts_with("id.") {
-        RuleToken::CssId(s[3..].to_string())
-    } else if s.starts_with("tag.") {
-        RuleToken::TagName(s[4..].to_string())
+    if let Some(rest) = s.strip_prefix("class.") {
+        RuleToken::CssClass(rest.to_string())
+    } else if let Some(rest) = s.strip_prefix("id.") {
+        RuleToken::CssId(rest.to_string())
+    } else if let Some(rest) = s.strip_prefix("tag.") {
+        RuleToken::TagName(rest.to_string())
     } else if s.starts_with("$.") || s.starts_with("$[") {
         RuleToken::JsonPath(s.to_string())
-    } else if s.starts_with("data.") {
-        let path: Vec<String> = s[5..].split('.').map(|x| x.to_string()).collect();
+    } else if let Some(rest) = s.strip_prefix("data.") {
+        let path: Vec<String> = rest.split('.').map(|x| x.to_string()).collect();
         RuleToken::DataPath(path)
-    } else if s.starts_with("//") {
-        RuleToken::Unknown(s.to_string())
     } else {
         RuleToken::Unknown(s.to_string())
     }
@@ -232,14 +229,14 @@ fn parse_annotation(s: &str) -> RuleToken {
         "html" => RuleToken::Html,
         "src" => RuleToken::Src,
         _ => {
-            if s.starts_with("css:") {
-                RuleToken::CssOverride(s[4..].to_string())
-            } else if s.starts_with("JSon:") {
-                RuleToken::JsonPath(s[5..].to_string())
-            } else if s.starts_with("tag.") {
-                RuleToken::TagName(s[4..].to_string())
-            } else if s.starts_with("js:") {
-                RuleToken::JsTransform(s[3..].to_string())
+            if let Some(rest) = s.strip_prefix("css:") {
+                RuleToken::CssOverride(rest.to_string())
+            } else if let Some(rest) = s.strip_prefix("JSon:") {
+                RuleToken::JsonPath(rest.to_string())
+            } else if let Some(rest) = s.strip_prefix("tag.") {
+                RuleToken::TagName(rest.to_string())
+            } else if let Some(rest) = s.strip_prefix("js:") {
+                RuleToken::JsTransform(rest.to_string())
             } else {
                 // Bare element/tag like @a, @li, @div
                 RuleToken::TagShort(s.to_string())

@@ -42,6 +42,7 @@ pub struct TestSummary {
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
+    pub cached: usize,
     pub js_api: Vec<BookSource>,
 }
 
@@ -49,13 +50,16 @@ pub async fn run(
     eligible: Vec<BookSource>,
     config: TestConfig,
     output_dir: &Path,
+    quiet: bool,
 ) -> anyhow::Result<TestSummary> {
     let client = Arc::new(HttpClient::new(config.timeout_secs)?);
     let db_path = output_dir.join("test_cache.db");
+    let config = Arc::new(config);
     let semaphore = Arc::new(Semaphore::new(config.concurrency));
     let mut handles = Vec::new();
     let passed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let js_api = Arc::new(std::sync::Mutex::new(Vec::new()));
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -68,7 +72,9 @@ pub async fn run(
             let current = completed_progress.load(std::sync::atomic::Ordering::Relaxed);
             if current >= total { break; }
             if current > last {
-                println!("Progress: {}/{} ({:.0}%)", current, total, current as f64 / total as f64 * 100.0);
+                if !quiet {
+                    println!("Progress: {}/{} ({:.0}%)", current, total, current as f64 / total as f64 * 100.0);
+                }
                 last = current;
             }
         }
@@ -80,9 +86,10 @@ pub async fn run(
         let semaphore = semaphore.clone();
         let passed = passed.clone();
         let failed = failed.clone();
+        let cached = cached.clone();
         let js_api = js_api.clone();
         let completed = completed.clone();
-        let config = config.clone();
+        let config = Arc::clone(&config);
 
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
@@ -92,8 +99,8 @@ pub async fn run(
             let cache = TestCache::new(&db_path).ok();
 
             // Check cache first
-            if let Some(ref cache) = cache {
-                if let Ok(Some((status, _))) = cache.check(&source.bookSourceUrl, &source.bookSourceName) {
+            if let Some(ref cache) = cache
+                && let Ok(Some((status, _))) = cache.check(&source.bookSourceUrl, &source.bookSourceName) {
                     match status.as_str() {
                         "passed" => {
                             passed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -103,15 +110,16 @@ pub async fn run(
                             // Re-test failed sources
                         }
                         "dead_domain" => {
+                            cached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             return;
                         }
                         "js_api" => {
+                            cached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             return;
                         }
                         _ => {}
                     }
                 }
-            }
 
             // Check startBrowserAwait — unrecoverable
             let su = source.searchUrl.as_deref().unwrap_or("");
@@ -119,16 +127,25 @@ pub async fn run(
             let needs_js = (su.starts_with("@js:") || su.contains("<js>")) && !is_startbrowser;
 
             if is_startbrowser {
-                if let Some(ref cache) = cache {
-                    let _ = cache.save(&source.bookSourceUrl, &source.bookSourceName, "js_api", None, 0);
+                if let Some(ref cache) = cache
+                    && let Err(e) = cache.save(&source.bookSourceUrl, &source.bookSourceName, "js_api", None, 0)
+                {
+                    warn!("cache save failed for {}: {}", source.bookSourceName, e);
                 }
-                js_api.lock().unwrap().push(source);
+                // Use into_inner() to recover from a poisoned mutex
+                let mut guard = match std::sync::Mutex::lock(&*js_api) {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                guard.push(source);
                 return;
             }
 
             if needs_js && config.no_node {
-                if let Some(ref cache) = cache {
-                    let _ = cache.save(&source.bookSourceUrl, &source.bookSourceName, "skipped", Some("no_node"), 0);
+                if let Some(ref cache) = cache
+                    && let Err(e) = cache.save(&source.bookSourceUrl, &source.bookSourceName, "skipped", Some("no_node"), 0)
+                {
+                    warn!("cache save failed for {}: {}", source.bookSourceName, e);
                 }
                 failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
@@ -195,8 +212,14 @@ pub async fn run(
                     }
                 };
 
-                // Determine content type for parsing
-                let content_type = if result.content_type.contains("json") || spec.url.contains("json") {
+                // Determine content type for parsing.
+                // Prefer the response Content-Type header; only fall back to URL
+                // heuristics if the header is absent or generic (e.g., text/html
+                // for JSON APIs that misreport).
+                let content_type = if result.content_type.contains("json") {
+                    "json".to_string()
+                } else if spec.url.contains("json") && !result.content_type.contains("html") {
+                    // URL contains "json" and the response isn't explicitly HTML
                     "json".to_string()
                 } else {
                     "html".to_string()
@@ -219,14 +242,16 @@ pub async fn run(
                             results.len(),
                             result.elapsed_ms
                         );
-                        if let Some(ref cache) = cache {
-                            let _ = cache.save(
+                        if let Some(ref cache) = cache
+                            && let Err(e) = cache.save(
                                 &source.bookSourceUrl,
                                 &source.bookSourceName,
                                 "passed",
                                 None,
                                 1,
-                            );
+                            )
+                        {
+                            warn!("cache save failed for {}: {}", source.bookSourceName, e);
                         }
                         passed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return;
@@ -243,33 +268,42 @@ pub async fn run(
                 ("no_results", 1)
             };
             info!("{}: FAILED (reason={})", source.bookSourceName, fail_reason);
-            if let Some(ref cache) = cache {
-                let _ = cache.save(
+            if let Some(ref cache) = cache
+                && let Err(e) = cache.save(
                     &source.bookSourceUrl,
                     &source.bookSourceName,
                     "failed",
                     Some(fail_reason),
                     retry_count,
-                );
+                )
+            {
+                warn!("cache save failed for {}: {}", source.bookSourceName, e);
             }
             failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }));
     }
 
-    // Wait for all tasks
+    // Wait for all tasks. If a task panicked, count it as failed
+    // (the source is skipped, and IncOnDrop already incremented completed).
     for handle in handles {
-        let _ = handle.await;
+        if handle.await.is_err() {
+            failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     progress_handle.await.unwrap_or(());
 
     let passed_count = passed.load(std::sync::atomic::Ordering::Relaxed);
     let failed_count = failed.load(std::sync::atomic::Ordering::Relaxed);
-    let js_api_sources = js_api.lock().unwrap().clone();
+    let cached_count = cached.load(std::sync::atomic::Ordering::Relaxed);
+    let js_api_sources = std::sync::Mutex::lock(&*js_api)
+        .map(|g| g.clone())
+        .unwrap_or_else(|e| e.into_inner().clone());
 
     Ok(TestSummary {
-        total: passed_count + failed_count + js_api_sources.len(),
+        total: passed_count + failed_count + cached_count + js_api_sources.len(),
         passed: passed_count,
         failed: failed_count,
+        cached: cached_count,
         js_api: js_api_sources,
     })
 }
@@ -279,8 +313,8 @@ fn select_keywords(source: &BookSource, config: &TestConfig) -> Vec<String> {
     let mut tried = std::collections::HashSet::new();
 
     // Priority 1: checkKeyWord from ruleSearch
-    if let Some(ref rs) = source.ruleSearch {
-        if let Some(ref kw) = rs.checkKeyWord {
+    if let Some(ref rs) = source.ruleSearch
+        && let Some(ref kw) = rs.checkKeyWord {
             let trimmed = kw.trim();
             if !trimmed.is_empty() && tried.insert(trimmed.to_string()) {
                 keywords.push(trimmed.to_string());
@@ -289,18 +323,15 @@ fn select_keywords(source: &BookSource, config: &TestConfig) -> Vec<String> {
                 }
             }
         }
-    }
 
     // Priority 2: domain-matched test books
     let url = source.bookSourceUrl.to_lowercase();
     for book in &config.test_books {
-        if let Some(ref hint) = book.domain_hint {
-            if url.contains(&hint.to_lowercase()) {
-                if tried.insert(book.name.clone()) {
+        if let Some(ref hint) = book.domain_hint
+            && url.contains(&hint.to_lowercase())
+                && tried.insert(book.name.clone()) {
                     keywords.push(book.name.clone());
                 }
-            }
-        }
     }
 
     // Fill up to 3 with generic keywords and test books

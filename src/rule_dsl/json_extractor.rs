@@ -29,8 +29,8 @@ pub fn extract(json: &Value, tokens: &[RuleToken]) -> Vec<String> {
                         path_parts.push(part);
                     }
                 }
-            } else if let Some(rest) = path.strip_prefix("$[") {
-                if rest.starts_with("*]") || rest.starts_with('*') {
+            } else if let Some(rest) = path.strip_prefix("$[")
+                && (rest.starts_with("*]") || rest.starts_with('*')) {
                     let after_bracket = rest.split(']').nth(1).unwrap_or("");
                     path_parts = after_bracket.split('.').filter(|p| !p.is_empty()).collect();
                     if let Value::Array(arr) = json {
@@ -40,7 +40,6 @@ pub fn extract(json: &Value, tokens: &[RuleToken]) -> Vec<String> {
                         return results;
                     }
                 }
-            }
 
             collect_values(json, &path_parts, &mut results);
         }
@@ -129,6 +128,6 @@ mod tests {
         let json: Value = serde_json::from_str(r#"{"books":[{"title":"Test"}]}"#).unwrap();
         let tokens = tokenize("data.books");
         let results = extract(&json, &tokens);
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
     }
 }

@@ -144,51 +144,6 @@ pub enum SkipReason {
     JsApi,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum TestStatus {
-    Passed,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum FailReason {
-    Timeout,
-    NoResults,
-    ParseError,
-    EncodingError,
-    DnsError,
-    HttpError,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PreflightItem {
-    pub source: BookSource,
-    pub status: PreflightStatus,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PreflightStatus {
-    Eligible,
-    Skipped { reason: SkipReason },
-    ExploreOnly,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TestResult {
-    pub source: BookSource,
-    pub status: TestStatus,
-    pub reason: Option<FailReason>,
-    pub detail: Option<String>,
-    pub tested_at: i64,
-    pub retry_count: u32,
-    pub keyword_used: Option<String>,
-}
-
 // ── Output containers ────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

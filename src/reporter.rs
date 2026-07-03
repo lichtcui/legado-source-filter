@@ -51,10 +51,10 @@ pub fn write_outputs(
 
     // Group skipped by reason
     use std::collections::HashMap;
-    let mut skip_counts: HashMap<&str, usize> = HashMap::new();
+    let mut skip_counts: HashMap<String, usize> = HashMap::new();
     for (_, reason) in &output.skipped {
         let key = serde_json::to_string(reason).unwrap_or_default();
-        *skip_counts.entry(Box::leak(key.into_boxed_str())).or_insert(0) += 1;
+        *skip_counts.entry(key).or_insert(0) += 1;
     }
 
     writeln!(report, "--- 跳过明细 ---")?;
@@ -78,10 +78,10 @@ pub fn write_outputs(
     // ── report.json (structured, only in JSON mode) ──
     if json_output {
         use std::collections::HashMap;
-        let mut skip_counts: HashMap<&str, usize> = HashMap::new();
+        let mut skip_counts: HashMap<String, usize> = HashMap::new();
         for (_, reason) in &output.skipped {
             let key = serde_json::to_string(reason).unwrap_or_default();
-            *skip_counts.entry(Box::leak(key.into_boxed_str())).or_insert(0) += 1;
+            *skip_counts.entry(key).or_insert(0) += 1;
         }
         let skip_detail: serde_json::Value = skip_counts.iter().map(|(k, v)| (k.to_string(), *v)).collect();
 

@@ -2,49 +2,97 @@
 
 自动从 [legado.aoaostar.com](https://legado.aoaostar.com) 获取最新书源列表，通过预检过滤和并发搜索测试，筛选出**当前可用的文字书源**，直接导入 [Legado](https://github.com/gedoor/legado) 阅读 APP。
 
-## 使用方法
+## 快速开始
 
 ```bash
-# 1. 静态预检（无需网络）
+# 一行命令：预检 + 5 轮重试测试（全自动，约 1-2 小时）
+cargo run -- full --rounds 5
+
+# 查看当前管道进度
+cargo run -- status
+
+# 只做静态预检（无需网络请求）
 cargo run -- preflight
 
-# 2. 搜索测试（50 并发，约 30-45 分钟）
+# 在上次 preflight 基础上运行测试（50 并发）
 cargo run -- test
-
-# 3. 快速测试（前 10 个）
-cargo run -- test --limit 10 --concurrency 5
-
-# 4. 一行命令：预检 + 5 轮重试
-cargo run -- preflight && cargo run -- test --rounds 5
 ```
 
-### 常用参数
+## 命令详解
 
-| 参数 | 说明 |
-|------|------|
-| `--concurrency N` | 并发数，默认 50 |
-| `--timeout N` | 单请求超时（秒），默认 15 |
-| `--force` | 忽略缓存，全部重新测试 |
-| `--retry-missed` | 仅重测之前失败的源 |
-| `--limit N` | 只测前 N 个源 |
-| `--rounds N` | 测试轮数，失败源每轮重试（默认 1） |
-| `--no-node` | 跳过 JS 源（无需安装 Node.js） |
+### `full` — 一键完成
 
-## 工作流程
+从下载书源 → 预检 → 多轮测试 → 输出结果，一站式执行。推荐使用。
 
-1. **自动更新** — 启动时从 legado.aoaostar.com 获取最新"全量书源" JSON（本地有缓存则增量更新，服务器不可用时回退到缓存）
-2. **预检（preflight）** — 过滤非文字源、禁用源、URL 无效、无搜索能力的源
-3. **搜索测试（test）** — 每源最多试 3 个关键词，50 并发请求，结果缓存到 SQLite 支持断点续测
+```bash
+# 基本用法
+cargo run -- full --rounds 5
 
-## 输出
+# 快速测试前 10 个源
+cargo run -- full --limit 10 --rounds 3
+```
+
+### `preflight` — 静态预检
+
+过滤非文字源、禁用源、URL 无效、无搜索能力的源。无需网络请求。
+
+### `test` — 搜索测试
+
+在已预检的源上进行并发搜索测试。支持断点续测（SQLite 缓存）。
+
+```bash
+# 5 轮测试（失败源自动重试）
+cargo run -- test --rounds 5
+
+# 仅重试之前因网络错误失败的源
+cargo run -- test --retry-missed --rounds 3
+
+# 跳过 JS 源（无需安装 Node.js）
+cargo run -- test --no-node
+
+# 只测前 10 个源
+cargo run -- test --limit 10
+```
+
+### `status` — 查看进度
+
+显示预检和测试的当前完成情况。
+
+```bash
+cargo run -- status
+```
+
+## 全部参数
+
+| 参数 | 适用命令 | 说明 |
+|------|---------|------|
+| `-c`, `--concurrency N` | test, full | 并发数，默认 50 |
+| `-t`, `--timeout N` | test, full | 单请求超时（秒），默认 15 |
+| `--rounds N` | test, full | 测试轮数，失败源每轮重试，默认 1 |
+| `--limit N` | test, full | 只测前 N 个源 |
+| `--force` | test, full | 忽略缓存，全部重新测试 |
+| `--retry-missed` | test | 仅重测之前失败的源 |
+| `--no-node` | test, full | 跳过 JS 源 |
+| `--config PATH` | test, full | 指定 config.toml 路径（可选） |
+| `--json` | 全局 | 输出 JSON Lines 到 stdout，适合 AI 解析 |
+| `-i`, `--input PATH` | 全局 | 书源 JSON 路径（默认 XDG_DATA_HOME） |
+| `-o`, `--output DIR` | 全局 | 输出目录（默认 XDG_CACHE_HOME） |
+
+## 输出文件
+
+输出目录默认位于 `~/.cache/legado-source-filter/`（可通过 `--output` 或 `XDG_CACHE_HOME` 环境变量修改）。
 
 | 文件 | 说明 |
 |------|------|
-| `output/eligible.json` | 待测书源 |
-| `output/filtered.json` | 可用的书源，直接导入 Legado |
-| `output/missed.json` | 测试失败 |
-| `output/skipped.json` | 预检跳过 |
-| `output/explore_only.json` | 仅支持发现的书源 |
+| `eligible.json` | 预检通过、待测试的书源列表 |
+| `filtered.json` | 测试通过的可用书源，直接导入 Legado |
+| `missed.json` | 测试失败的书源 |
+| `js_api.json` | 依赖 Legado 特有 JS API、无法外部测试的书源 |
+| `skipped.json` | 预检阶段跳过的书源及原因 |
+| `explore_only.json` | 仅支持「发现」功能、不支持搜索的书源 |
+| `report.json` | 结构化汇总报告（JSON 模式） |
+| `report.txt` | 人类可读的预检报告 |
+| `test_cache.db` | SQLite 缓存，支持断点续测 |
 
 ## 技术栈
 
@@ -52,4 +100,4 @@ cargo run -- preflight && cargo run -- test --rounds 5
 - **HTML 解析**: scraper（Servo CSS 引擎）
 - **编码探测**: chardetng + encoding_rs
 - **JS 执行**: Node.js polyfill（可选依赖）
-- **缓存**: rusqlite（支持断点续测）
+- **缓存**: rusqlite（SQLite，支持断点续测）

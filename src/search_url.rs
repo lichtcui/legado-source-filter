@@ -46,20 +46,12 @@ fn resolve_js_l1(search_url: &str, base_url: &str, keyword: &str) -> Option<Stri
 
     let js_body = &search_url[4..];
 
-    // Pattern: url=baseUrl+"/path/"+key or url=baseUrl+"/path/{{key}}"
+    // Match: url = baseUrl + "/path/" + key  (possibly with encodeURI wrapping)
     let key_enc = urlencoding(keyword);
-
-    // Try baseUrl + "/path/" + key
-    let concat_re = Regex::new(r#"(?s)url\s*=\s*baseUrl\s*\+\s*"([^"]*)"\s*\+\s*(?:encodeURI\s*\(\s*)?key(?:\))?\s*"#).ok()?;
-    if let Some(caps) = concat_re.captures(js_body) {
-        let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-        let path_resolved = resolve_template(path, &key_enc);
-        return Some(format!("{}{}", base_url.trim_end_matches('/'), path_resolved));
-    }
-
-    // Pattern: url=baseUrl+"/path/"+key,... with trailing options
-    let concat_re2 = Regex::new(r#"(?s)url\s*=\s*baseUrl\s*\+\s*"([^"]*)"\s*\+\s*(?:encodeURI\s*\(\s*)?(?:key)(?:\))?\s*"#).ok()?;
-    if let Some(caps) = concat_re2.captures(js_body) {
+    let re = Regex::new(
+        r#"(?s)url\s*=\s*baseUrl\s*\+\s*"([^"]*)"\s*\+\s*(?:encodeURI\s*\(\s*)?key(?:\))?"#
+    ).ok()?;
+    if let Some(caps) = re.captures(js_body) {
         let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         let path_resolved = resolve_template(path, &key_enc);
         return Some(format!("{}{}", base_url.trim_end_matches('/'), path_resolved));

@@ -30,14 +30,13 @@ pub fn apply_combinators(values: Vec<String>, tokens: &[RuleToken]) -> Vec<Strin
                         .collect();
                 }
             }
-            RuleToken::Index(n) => {
+            RuleToken::Index(n)
                 // !0 means "exclude index 0", .0 means "only index 0"
                 // We handle Index as "take index n" in the HTML extractor.
                 // Here we handle it as "remove index n" for exclusion patterns.
-                if *n < results.len() {
+                if *n < results.len() => {
                     results.remove(*n);
                 }
-            }
             _ => {}
         }
     }
@@ -74,5 +73,45 @@ mod tests {
         let second = vec!["result".to_string()];
         let merged = merge_fallback(&[first, second]);
         assert_eq!(merged, vec!["result"]);
+    }
+
+    #[test]
+    fn test_apply_combinators_noop() {
+        // No combinator tokens → unchanged
+        let tokens = tokenize("class.name@text");
+        let values = vec!["hello".to_string()];
+        let result = apply_combinators(values.clone(), &tokens);
+        assert_eq!(result, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_apply_combinators_regex_replace() {
+        let tokens = tokenize("$.name##(\\d+)##NUM:$1");
+        let values = vec!["page123".to_string()];
+        let result = apply_combinators(values, &tokens);
+        // re.replace_all replaces the matched portion, preserving prefix text
+        assert_eq!(result[0], "pageNUM:123");
+    }
+
+    #[test]
+    fn test_apply_combinators_index_removal() {
+        // !0 means "exclude index 0" — remove first element
+        use crate::rule_dsl::parser::RuleToken;
+        let tokens = vec![
+            RuleToken::Index(0),
+        ];
+        let values = vec!["remove".to_string(), "keep".to_string()];
+        let result = apply_combinators(values, &tokens);
+        assert_eq!(result, vec!["keep"]);
+    }
+
+    #[test]
+    fn test_apply_combinators_fallback_uses_first() {
+        // With fallback semantics, first non-empty result wins
+        let tokens = tokenize("class.a@text||class.b@text");
+        let values = vec!["first".to_string()];
+        let result = apply_combinators(values, &tokens);
+        // Fallback token stops at first non-empty — "first" is non-empty
+        assert_eq!(result, vec!["first"]);
     }
 }

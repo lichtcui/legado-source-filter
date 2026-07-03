@@ -67,11 +67,10 @@ pub fn extract(html: &str, tokens: &[RuleToken]) -> Vec<String> {
             RuleToken::Href => {
                 for html_snippet in &current_html {
                     let doc = Html::parse_fragment(html_snippet);
-                    if let Some(elem) = doc.root_element().select(&Selector::parse("*").unwrap()).next() {
-                        if let Some(href) = elem.value().attr("href") {
+                    if let Some(elem) = doc.root_element().select(&Selector::parse("*").unwrap()).next()
+                        && let Some(href) = elem.value().attr("href") {
                             results.push(href.to_string());
                         }
-                    }
                 }
                 return results;
             }
@@ -85,11 +84,10 @@ pub fn extract(html: &str, tokens: &[RuleToken]) -> Vec<String> {
             RuleToken::Src => {
                 for html_snippet in &current_html {
                     let doc = Html::parse_fragment(html_snippet);
-                    if let Some(elem) = doc.root_element().select(&Selector::parse("*").unwrap()).next() {
-                        if let Some(src) = elem.value().attr("src") {
+                    if let Some(elem) = doc.root_element().select(&Selector::parse("*").unwrap()).next()
+                        && let Some(src) = elem.value().attr("src") {
                             results.push(src.to_string());
                         }
-                    }
                 }
                 return results;
             }
@@ -99,11 +97,9 @@ pub fn extract(html: &str, tokens: &[RuleToken]) -> Vec<String> {
         }
     }
 
-    // No extractor encountered: return text from remaining elements
-    for html_snippet in &current_html {
-        let doc = Html::parse_fragment(html_snippet);
-        results.push(doc.root_element().text().collect::<String>());
-    }
+    // No extractor encountered: return the outer HTML of remaining elements
+    // (preserving HTML structure for downstream selector steps).
+    results = current_html;
     results
 }
 
@@ -119,18 +115,17 @@ fn apply_selector_all(snippets: &[String], selector_str: &str) -> Vec<String> {
     for snippet in snippets {
         let doc = Html::parse_fragment(snippet);
         for element in doc.root_element().select(&selector) {
-            // Serialize the element itself (not just its children) by wrapping in a container
+            // Serialize the element itself (not just its children) by wrapping in a container.
+            // Preserve ALL attributes to support subsequent locator/extractor steps
+            // that may depend on any attribute (data-*, style, title, rel, etc.).
             let inner = element.html();
             let tag = element.value().name.local.as_ref();
-            let id = element.value().id().map(|i| format!(" id=\"{}\"", i)).unwrap_or_default();
-            let class_attr = element.value().classes().collect::<Vec<_>>();
-            let class_str = if class_attr.is_empty() { String::new() } else { format!(" class=\"{}\"", class_attr.join(" ")) };
-
-            // Build attributes string (simplified — just href and src for now)
-            let href = element.value().attr("href").map(|h| format!(" href=\"{}\"", h)).unwrap_or_default();
-            let src = element.value().attr("src").map(|s| format!(" src=\"{}\"", s)).unwrap_or_default();
-
-            let outer = format!("<{tag}{id}{class_str}{href}{src}>{inner}</{tag}>");
+            let attrs: String = element.value()
+                .attrs()
+                .map(|(k, v)| format!(" {}=\"{}\"", k, v.replace('"', "&quot;")))
+                .collect::<Vec<_>>()
+                .join("");
+            let outer = format!("<{tag}{attrs}>{inner}</{tag}>");
             results.push(outer);
         }
     }
@@ -164,5 +159,28 @@ mod tests {
         let tokens = tokenize("tag.li.0@text");
         let results = extract(html, &tokens);
         assert_eq!(results, vec!["First"]);
+    }
+
+    #[test]
+    fn test_preserves_custom_attributes() {
+        // The fix ensures ALL attributes are preserved when rebuilding outer HTML,
+        // not just id/class/href/src.
+        let html = r#"<div class="item" data-id="42" style="color:red" title="tip" rel="nofollow">
+            <a href="/book/1">Book 1</a>
+        </div>"#;
+        // Apply class selector, then extract href from the child link
+        let tokens = tokenize("class.item@tag.a@href");
+        let results = extract(html, &tokens);
+        assert_eq!(results, vec!["/book/1"], "href from child link");
+
+        // Verify the outer HTML reconstruction includes nested elements
+        // by extracting inner HTML after the class selector.
+        let with_html = tokenize("class.item@html");
+        let results = extract(html, &with_html);
+        assert_eq!(results.len(), 1, "should match one .item element");
+        assert!(
+            results[0].contains("href=\"/book/1\""),
+            "href attribute should be preserved in inner HTML"
+        );
     }
 }

@@ -1,7 +1,5 @@
 /// Auto-fix malformed `bookSourceUrl` values.
-///
 /// Returns `Some(fixed_url)` if fixable, `None` if irreparably broken.
-
 pub fn fix_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
 
@@ -10,12 +8,12 @@ pub fn fix_url(raw: &str) -> Option<String> {
         return Some(trimmed.to_string());
     }
 
-    // [图片]http://... → strip prefix
-    if let Some(pos) = trimmed.find("http") {
-        if pos > 0 && trimmed[..pos].contains("图片") {
+    // [图片]http://... → strip prefix.
+    // Only match at protocol start to avoid matching "http" in URL paths.
+    if let Some(pos) = trimmed.find("http://").or_else(|| trimmed.find("https://"))
+        && pos > 0 && trimmed[..pos].contains("图片") {
             return Some(trimmed[pos..].to_string());
         }
-    }
 
     // http:www.xxx.com → add slash
     if trimmed.starts_with("http:") && !trimmed.starts_with("http://") {
@@ -31,7 +29,7 @@ pub fn fix_url(raw: &str) -> Option<String> {
     if let Some(dot_pos) = trimmed.find('.') {
         let before_dot = &trimmed[..dot_pos];
         // must start with an alphanumeric char (not whitespace, not emoji)
-        if before_dot.chars().next().map_or(false, |c| c.is_alphanumeric())
+        if before_dot.chars().next().is_some_and(|c| c.is_alphanumeric())
             && !trimmed.contains(char::is_whitespace)
             && !trimmed.contains("：")
         {

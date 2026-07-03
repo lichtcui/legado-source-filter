@@ -59,6 +59,12 @@ impl HttpClient {
         };
 
         let status_code = response.status().as_u16();
+
+        // Server errors (5xx) are transient — return error so tester retries
+        if status_code >= 500 {
+            anyhow::bail!("HTTP {} for {}", status_code, spec.url);
+        }
+
         let content_type = response
             .headers()
             .get("content-type")
@@ -103,22 +109,20 @@ pub fn parse_headers(header_str: &str) -> Vec<(String, String)> {
 
 fn decode_body(bytes: &[u8], content_type: &str, url_charset: &Option<String>) -> (String, Option<String>, bool) {
     // Priority 1: Content-Type header charset
-    if let Some(charset_str) = extract_charset_from_header(content_type) {
-        if let Some(encoding) = Encoding::for_label(charset_str.as_bytes()) {
+    if let Some(charset_str) = extract_charset_from_header(content_type)
+        && let Some(encoding) = Encoding::for_label(charset_str.as_bytes()) {
             let (text, _, _) = encoding.decode(bytes);
             return (text.into_owned(), Some(charset_str), false);
         }
-    }
 
     // Priority 2: Charset hint from searchUrl config
-    if let Some(charset) = url_charset {
-        if let Some(encoding) = Encoding::for_label(charset.as_bytes()) {
+    if let Some(charset) = url_charset
+        && let Some(encoding) = Encoding::for_label(charset.as_bytes()) {
             let (text, _, had_errors) = encoding.decode(bytes);
             if !had_errors {
                 return (text.into_owned(), Some(charset.clone()), false);
             }
         }
-    }
 
     // Priority 3: chardetng detection
     let mut detector = chardetng::EncodingDetector::new();
@@ -135,7 +139,7 @@ fn extract_charset_from_header(content_type: &str) -> Option<String> {
     let lower = content_type.to_lowercase();
     if let Some(pos) = lower.find("charset=") {
         let rest = &lower[pos + 8..];
-        let charset = rest.split(|c: char| c == ';' || c == ' ' || c == ',').next().unwrap_or("");
+        let charset = rest.split([';', ' ', ',']).next().unwrap_or("");
         if !charset.is_empty() {
             return Some(charset.to_string());
         }

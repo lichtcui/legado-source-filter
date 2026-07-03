@@ -21,7 +21,7 @@ fn classify_url(raw: &str) -> UrlStatus {
 fn has_search(s: &BookSource) -> bool {
     s.searchUrl
         .as_deref()
-        .map_or(false, |u| !u.trim().is_empty() && u.trim() != "-" && u.trim() != "#")
+        .is_some_and(|u| !u.trim().is_empty() && u.trim() != "-" && u.trim() != "#")
 }
 
 fn has_explore(s: &BookSource) -> bool {
@@ -70,14 +70,12 @@ pub fn run(sources: Vec<BookSource>) -> PreflightOutput {
         }
 
         // Step 3: has searchUrl but missing ruleSearch (should be ~0)
-        if let Some(ref su) = source.searchUrl {
-            if !su.trim().is_empty() && su.trim() != "-" && su.trim() != "#" {
-                if source.ruleSearch.is_none() {
+        if let Some(ref su) = source.searchUrl
+            && !su.trim().is_empty() && su.trim() != "-" && su.trim() != "#"
+                && source.ruleSearch.is_none() {
                     skipped.push((source, SkipReason::NoSearchRule));
                     continue;
                 }
-            }
-        }
 
         // Step 4: check ruleContent
         if source.ruleContent.is_none() {

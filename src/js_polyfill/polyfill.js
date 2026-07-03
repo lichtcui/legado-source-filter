@@ -123,21 +123,4 @@ globalThis.Packages = {
 
 globalThis.JavaImporter = function() { return function() {}; };
 
-// ── Helpers to extract the final URL from the searchUrl JS ──
-// The searchUrl JS will set a variable `url` or call java.put('url', value)
-// We detect the final URL from the last console.log output
-
-// After the source's JS runs, output the resolved URL
-globalThis.__getResult = function() {
-    const url = globalThis.java._store['url'] || globalThis.__lastUrl || '';
-    const method = globalThis.__lastMethod || 'GET';
-    const headers = globalThis.__lastHeaders || {};
-    const body = globalThis.__lastBody || '';
-    console.log(JSON.stringify({
-        type: 'result',
-        url: String(url),
-        method: String(method),
-        headers: headers,
-        body: String(body)
-    }));
-};
+// Result extraction is handled inline in runner.rs

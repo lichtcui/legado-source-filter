@@ -65,7 +65,12 @@ try {{
 
     loop {
         if start.elapsed() > timeout {
-            let _ = child.kill();
+            if let Err(e) = child.kill() {
+                warn!("Failed to kill timed-out node process: {}", e);
+            } else {
+                // Wait briefly for the process to exit after kill
+                let _ = child.wait();
+            }
             warn!("Node subprocess timed out after 10s");
             return None;
         }
@@ -97,11 +102,10 @@ try {{
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines().rev() {
         let trimmed = line.trim();
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            if val.get("type").and_then(|v| v.as_str()) == Some("result") {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+            && val.get("type").and_then(|v| v.as_str()) == Some("result") {
                 return val.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
             }
-        }
     }
 
     None
