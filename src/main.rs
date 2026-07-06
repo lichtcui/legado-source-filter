@@ -8,14 +8,49 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_CONFIG: &str = include_str!("../data/config.toml");
 
-fn xdg_input() -> PathBuf {
-    let home = || std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let base = std::env::var("XDG_DATA_HOME")
-        .unwrap_or_else(|_| format!("{}/.local/share", home()));
-    PathBuf::from(base).join("legado-source-filter").join("sources.json")
+fn resolve_input() -> PathBuf {
+    // Priority: 1) explicit --input flag (handled by CLI), 2) CWD data/*.json, 3) XDG default
+    // This is called only when --input is not given, to resolve a sensible default.
+    let xdg = {
+        let home = || std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let base = std::env::var("XDG_DATA_HOME")
+            .unwrap_or_else(|_| format!("{}/.local/share", home()));
+        PathBuf::from(base).join("legado-source-filter").join("sources.json")
+    };
+    // Check for project-relative data files (convenience for running from repo root)
+    if let Ok(cwd) = std::env::current_dir() {
+        let data_dir = cwd.join("data");
+        if data_dir.is_dir() {
+            // Prefer sources.json, else any .json file
+            let named = data_dir.join("sources.json");
+            if named.exists() {
+                return named;
+            }
+            if let Ok(entries) = std::fs::read_dir(&data_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "json") {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+    xdg
 }
 
-fn xdg_output() -> PathBuf {
+fn resolve_output() -> PathBuf {
+    // Priority: 1) explicit --output flag, 2) CWD output/ if it exists or data/ exists, 3) XDG default
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_output = cwd.join("output");
+        if cwd_output.is_dir() {
+            return cwd_output;
+        }
+        // If running from repo root with data/ dir, default to output/ even if not yet created
+        if cwd.join("data").is_dir() {
+            return cwd_output;
+        }
+    }
     let home = || std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let base = std::env::var("XDG_CACHE_HOME")
         .unwrap_or_else(|_| format!("{}/.cache", home()));
@@ -133,8 +168,8 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let input_path = cli.input.clone().unwrap_or_else(xdg_input);
-    let output_path = cli.output.clone().unwrap_or_else(xdg_output);
+    let input_path = cli.input.clone().unwrap_or_else(resolve_input);
+    let output_path = cli.output.clone().unwrap_or_else(resolve_output);
 
     match &cli.command {
         Commands::Status => {
@@ -740,14 +775,31 @@ fn download_to_file(url: &str, path: &std::path::Path) -> anyhow::Result<()> {
 fn discover_source_url(html_str: &str) -> anyhow::Result<String> {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(html_str);
+    let li_sel = Selector::parse("li").unwrap();
+    let p_sel = Selector::parse("p").unwrap();
     let a_sel = Selector::parse("a[href]").unwrap();
 
-    for elem in doc.root_element().select(&a_sel) {
-        let text: String = elem.text().collect();
-        if text.contains("全量书源")
-            && let Some(href) = elem.value().attr("href")
-        {
-            return Ok(href.to_string());
+    for li in doc.root_element().select(&li_sel) {
+        // Check if this <li> contains a <p> with text "全量书源"
+        let mut has_header = false;
+        for p in li.select(&p_sel) {
+            let text: String = p.text().collect();
+            if text.contains("全量书源") {
+                has_header = true;
+                break;
+            }
+        }
+        if !has_header {
+            continue;
+        }
+
+        // Within this <li>, find the first <a> with a .json href
+        for a in li.select(&a_sel) {
+            if let Some(href) = a.value().attr("href") {
+                if href.ends_with(".json") {
+                    return Ok(href.to_string());
+                }
+            }
         }
     }
 
