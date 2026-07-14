@@ -1,18 +1,20 @@
 use std::fs;
 use std::path::Path;
 
+use crate::db::TestCache;
 use crate::types::*;
 
 pub fn write_outputs(
     output_dir: &Path,
+    db_path: &Path,
     output: &PreflightOutput,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(output_dir)?;
+    let cache = TestCache::new(db_path)?;
 
-    // ── eligible.json ──
-    let eligible_path = output_dir.join("eligible.json");
-    let eligible_json = serde_json::to_string_pretty(&output.eligible)?;
-    fs::write(&eligible_path, &eligible_json)?;
+    // ── eligible → DB ──
+    let eligible_json = serde_json::to_string(&output.eligible)?;
+    cache.save_meta("eligible", &eligible_json)?;
 
     // ── explore_only.json ──
     if !output.explore_only.is_empty() {
@@ -21,7 +23,7 @@ pub fn write_outputs(
         fs::write(&explore_path, &explore_json)?;
     }
 
-    // ── report.json (structured) ──
+    // ── report → DB ──
     use std::collections::HashMap;
     let mut skip_counts: HashMap<String, usize> = HashMap::new();
     for (_, reason) in &output.skipped {
@@ -48,8 +50,7 @@ pub fn write_outputs(
             "placeholder": output.breakdown.placeholder,
         },
     });
-    let json_path = output_dir.join("report.json");
-    fs::write(&json_path, serde_json::to_string_pretty(&report_json)?)?;
+    cache.save_meta("report", &serde_json::to_string(&report_json)?)?;
 
     Ok(())
 }

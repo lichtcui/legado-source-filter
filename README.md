@@ -55,9 +55,8 @@ cargo run -- status
 | 文件 | 说明 |
 |------|------|
 | `filtered.json` | 测试通过的可用书源，直接导入 Legado |
-| `eligible.json` | 预检通过、待测试的书源列表 |
-| `test_cache.db` | SQLite 缓存，支持断点续测 |
-| `report.json` | 预检 + 测试结构化汇总报告 |
+| `explore_only.json` | 仅支持「发现」功能、不支持搜索的书源 |
+| `test_cache.db` | SQLite 缓存 + 运行时数据（eligible、report） |
 
 ## 技术栈
 

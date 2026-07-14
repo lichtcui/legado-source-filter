@@ -133,15 +133,13 @@ fn main() -> anyhow::Result<()> {
     match &cli.command {
         Commands::Status => {
             let db_path = output_path.join("test_cache.db");
-            let eligible_path = output_path.join("eligible.json");
 
-            let total = std::fs::read_to_string(&eligible_path).ok()
-                .and_then(|s| serde_json::from_str::<Vec<types::BookSource>>(&s).ok())
-                .map(|v| v.len());
+            if let Ok(cache) = db::TestCache::new(&db_path) {
+                let n_total = cache.load_meta("eligible").ok().flatten()
+                    .and_then(|s| serde_json::from_str::<Vec<types::BookSource>>(&s).ok())
+                    .map(|v| v.len())
+                    .unwrap_or(0);
 
-            if let Some((n_total, cache)) = total.and_then(|t| {
-                db::TestCache::new(&db_path).ok().map(|c| (t, c))
-            }) {
                 let rows = cache.summary().unwrap_or_default();
                 let tested: usize = rows.iter().map(|(_, c)| c).sum();
                 let mut counts = std::collections::BTreeMap::new();
@@ -151,7 +149,7 @@ fn main() -> anyhow::Result<()> {
 
                 json_event(&cli, serde_json::json!({
                     "event": "status",
-                    "preflight": "done",
+                    "preflight": if n_total > 0 { "done" } else { "not_run" },
                     "total": n_total,
                     "tested": tested,
                     "remaining": n_total.saturating_sub(tested),
@@ -160,31 +158,17 @@ fn main() -> anyhow::Result<()> {
 
                 if !cli.json {
                     println!("=== Pipeline Status ===");
-                    println!("Preflight: done ({} eligible)", n_total);
-                    println!("Tested:    {} / {}", tested, n_total);
-                    for (status, count) in &rows {
-                        println!("  {:<16} {}", status, count);
+                    if n_total > 0 {
+                        println!("Preflight: done ({} eligible)", n_total);
+                        println!("Tested:    {} / {}", tested, n_total);
+                        for (status, count) in &rows {
+                            println!("  {:<16} {}", status, count);
+                        }
+                        let remaining = n_total - tested;
+                        println!("Remaining: {}", remaining);
+                    } else {
+                        println!("Preflight: not run yet — run `full` first");
                     }
-                    let remaining = n_total - tested;
-                    println!("Remaining: {}", remaining);
-                }
-            } else if eligible_path.exists() {
-                let n_total = std::fs::read_to_string(&eligible_path).ok()
-                    .and_then(|s| serde_json::from_str::<Vec<types::BookSource>>(&s).ok())
-                    .map_or(0, |v| v.len());
-
-                json_event(&cli, serde_json::json!({
-                    "event": "status",
-                    "preflight": "done",
-                    "total": n_total,
-                    "tested": 0,
-                    "remaining": n_total,
-                }));
-
-                if !cli.json {
-                    println!("=== Pipeline Status ===");
-                    println!("Preflight: done ({} eligible)", n_total);
-                    println!("Test:      not started yet");
                 }
             } else {
                 json_event(&cli, serde_json::json!({
@@ -195,7 +179,7 @@ fn main() -> anyhow::Result<()> {
 
                 if !cli.json {
                     println!("=== Pipeline Status ===");
-                    println!("Preflight: not run yet — run `preflight` first");
+                    println!("Preflight: not run yet — run `full` first");
                 }
             }
         }
@@ -212,7 +196,8 @@ fn main() -> anyhow::Result<()> {
             let reader = std::io::BufReader::new(file);
             let sources: Vec<types::BookSource> = serde_json::from_reader(reader)?;
             let preflight_out = preflight::run(sources);
-            reporter::write_outputs(&output_path, &preflight_out)?;
+            let db_path = output_path.join("test_cache.db");
+            reporter::write_outputs(&output_path, &db_path, &preflight_out)?;
 
             json_event(&cli, serde_json::json!({
                 "event": "preflight_summary",
@@ -434,23 +419,24 @@ fn run_test_campaign(
                 println!("{}", serde_json::to_string(&final_event).unwrap());
             }
 
-            // Merge test summary into report.json (written by preflight)
-            let report_path = output_path.join("report.json");
-            let mut report: serde_json::Value = std::fs::read_to_string(&report_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or(serde_json::json!({}));
-            report["test_summary"] = serde_json::json!({
-                "rounds": rounds,
-                "total": eligible.len(),
-                "passed": final_passed,
-                "dead_domain": final_dead,
-                "failed": final_failed,
-                "js_api": final_js_api,
-                "skipped": final_skipped,
-                "untested": untested,
-            });
-            let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report)?);
+            // Merge test summary into report in DB
+            let db_path = output_path.join("test_cache.db");
+            if let Ok(cache) = db::TestCache::new(&db_path) {
+                let mut report: serde_json::Value = cache.load_meta("report").ok().flatten()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(serde_json::json!({}));
+                report["test_summary"] = serde_json::json!({
+                    "rounds": rounds,
+                    "total": eligible.len(),
+                    "passed": final_passed,
+                    "dead_domain": final_dead,
+                    "failed": final_failed,
+                    "js_api": final_js_api,
+                    "skipped": final_skipped,
+                    "untested": untested,
+                });
+                let _ = cache.save_meta("report", &serde_json::to_string(&report).ok().unwrap_or_default());
+            }
 
             if !json_output {
                 println!("\n=== Final Summary ({} rounds) ===", rounds);
@@ -651,7 +637,7 @@ fn discover_source_url(html_str: &str) -> anyhow::Result<String> {
 }
 
 fn clear_output_cache(output_dir: &std::path::Path) {
-    for entry in &["test_cache.db", "eligible.json", "filtered.json"] {
+    for entry in &["test_cache.db", "filtered.json"] {
         let path = output_dir.join(entry);
         if path.exists() {
             let _ = std::fs::remove_file(&path);

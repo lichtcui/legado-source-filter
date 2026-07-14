@@ -19,7 +19,11 @@ impl TestCache {
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (book_source_url, book_source_name)
             );
-            CREATE INDEX IF NOT EXISTS idx_results_status ON test_results(status);"
+            CREATE INDEX IF NOT EXISTS idx_results_status ON test_results(status);
+            CREATE TABLE IF NOT EXISTS pipeline_data (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );"
         )?;
         Ok(Self { conn })
     }
@@ -53,6 +57,28 @@ impl TestCache {
             result.push(row?);
         }
         Ok(result)
+    }
+
+    /// Save a key-value metadata entry (e.g. "eligible", "report").
+    pub fn save_meta(&self, key: &str, value: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO pipeline_data (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Load a metadata entry by key.
+    pub fn load_meta(&self, key: &str) -> SqlResult<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT value FROM pipeline_data WHERE key = ?1"
+        )?;
+        let mut rows = stmt.query(params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn save(&self, url: &str, name: &str, status: &str, reason: Option<&str>, retry_count: u32) -> SqlResult<()> {

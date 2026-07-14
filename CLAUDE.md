@@ -69,7 +69,7 @@ src/
 - 输入：从 legado.aoaostar.com 自动获取最新全量书源（~3911 个，~21MB），本地 `data/` 目录缓存
 - 文字+启用：3680 → 预检 → 2957 个待测（683 跳过、46 仅发现）
 - searchUrl 类型：2785 模板 + 129 @js + 21 `<js>` + 22 纯 URL
-- 输出：`output/filtered.json`（约 640 个可用源，导入 Legado）
+- 输出：`output/filtered.json`（约 640 个可用源，导入 Legado） + `output/explore_only.json`
 
 ## CLI 参数
 
