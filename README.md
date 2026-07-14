@@ -5,17 +5,11 @@
 ## 快速开始
 
 ```bash
-# 一行命令：预检 + 5 轮重试测试（全自动，约 1-2 小时）
+# 一行命令：预检 + 5 轮重试测试（全自动，约 5-15 分钟）
 cargo run -- full --rounds 5
 
 # 查看当前管道进度
 cargo run -- status
-
-# 只做静态预检（无需网络请求）
-cargo run -- preflight
-
-# 在上次 preflight 基础上运行测试（50 并发）
-cargo run -- test
 ```
 
 ## 命令详解
@@ -32,28 +26,6 @@ cargo run -- full --rounds 5
 cargo run -- full --limit 10 --rounds 3
 ```
 
-### `preflight` — 静态预检
-
-过滤非文字源、禁用源、URL 无效、无搜索能力的源。无需网络请求。
-
-### `test` — 搜索测试
-
-在已预检的源上进行并发搜索测试。支持断点续测（SQLite 缓存）。
-
-```bash
-# 5 轮测试（失败源自动重试）
-cargo run -- test --rounds 5
-
-# 仅重试之前因网络错误失败的源
-cargo run -- test --retry-missed --rounds 3
-
-# 跳过 JS 源（无需安装 Node.js）
-cargo run -- test --no-node
-
-# 只测前 10 个源
-cargo run -- test --limit 10
-```
-
 ### `status` — 查看进度
 
 显示预检和测试的当前完成情况。
@@ -66,14 +38,12 @@ cargo run -- status
 
 | 参数 | 适用命令 | 说明 |
 |------|---------|------|
-| `-c`, `--concurrency N` | test, full | 并发数，默认 50 |
-| `-t`, `--timeout N` | test, full | 单请求超时（秒），默认 15 |
-| `--rounds N` | test, full | 测试轮数，失败源每轮重试，默认 1 |
-| `--limit N` | test, full | 只测前 N 个源 |
-| `--force` | test, full | 忽略缓存，全部重新测试 |
-| `--retry-missed` | test | 仅重测之前失败的源 |
-| `--no-node` | test, full | 跳过 JS 源 |
-| `--config PATH` | test, full | 指定 config.toml 路径（可选） |
+| `-c`, `--concurrency N` | full | 并发数，默认 50 |
+| `-t`, `--timeout N` | full | 单请求超时（秒），默认 15 |
+| `--rounds N` | full | 测试轮数，失败源每轮重试，默认 1 |
+| `--limit N` | full | 只测前 N 个源 |
+| `--force` | full | 忽略缓存，全部重新测试 |
+| `--config PATH` | full | 指定 config.toml 路径（可选） |
 | `--json` | 全局 | 输出 JSON Lines 到 stdout，适合 AI 解析 |
 | `-i`, `--input PATH` | 全局 | 书源 JSON 路径（默认 XDG_DATA_HOME） |
 | `-o`, `--output DIR` | 全局 | 输出目录（默认 XDG_CACHE_HOME） |

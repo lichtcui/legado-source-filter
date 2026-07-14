@@ -26,9 +26,7 @@ pub struct TestConfig {
     pub timeout_secs: u64,
     pub test_books: Vec<TestBook>,
     pub generic_keywords: Vec<String>,
-    pub no_node: bool,
     pub force: bool,
-    pub retry_missed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -106,7 +104,7 @@ pub async fn run(
                             passed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             return;
                         }
-                        "failed" if config.retry_missed => {
+                        "failed" => {
                             // Re-test failed sources
                         }
                         "dead_domain" => {
@@ -138,16 +136,6 @@ pub async fn run(
                     Err(e) => e.into_inner(),
                 };
                 guard.push(source);
-                return;
-            }
-
-            if needs_js && config.no_node {
-                if let Some(ref cache) = cache
-                    && let Err(e) = cache.save(&source.bookSourceUrl, &source.bookSourceName, "skipped", Some("no_node"), 0)
-                {
-                    warn!("cache save failed for {}: {}", source.bookSourceName, e);
-                }
-                failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
 

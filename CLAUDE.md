@@ -8,10 +8,8 @@
 cargo build                              # 编译
 cargo test                               # 全部测试（33 个）
 cargo test --test integration            # 集成测试
-cargo run -- preflight                   # 静态预检
-cargo run -- full --rounds 5             # 一键下载+预检+5轮测试（~1-2 小时）
-cargo run -- test --rounds 5             # 仅测试阶段（需先运行 preflight）
-cargo run -- test --limit 10             # 快速测试前 10 个
+cargo run -- full --rounds 5             # 一键下载+预检+5轮测试（~5-15 分钟）
+cargo run -- full --limit 10 --rounds 3  # 快速测试前 10 个
 cargo run -- --json status               # 查看管道进度（JSON 格式）
 cargo run -- status                      # 查看管道进度（人类可读）
 cargo run -- --json full --limit 5       # 一键运行+JSON 输出（AI 友好）
@@ -25,7 +23,7 @@ cargo run -- --json full --limit 5       # 一键运行+JSON 输出（AI 友好�
 
 ## 自动续跑
 
-全量测试（2957 源 × 5 轮）约需 1-2 小时，可能因网络/超时中断。SQLite 缓存支持断点续测：
+全量测试（2957 源 × 5 轮）约需 5-15 分钟，第 1 轮为主，后 4 轮只重试极少量 network_error 源。SQLite 缓存支持断点续测：
 
 ```bash
 # 首次启动（自动清除旧缓存，从头跑）
@@ -37,7 +35,7 @@ cargo run -- full --rounds 5            # 续跑——已有缓存的源直接�
 ```
 
 关键原则：
-- `full` 命令**默认清除旧缓存**，确保从头重新测试。续跑用 `test` 子命令
+- `full` 命令**默认清除旧缓存**，确保从头重新测试。续跑直接重新执行 `full` 命令即可，已有缓存的源自动跳过
 - SQLite 缓存（`output/test_cache.db`）保存每源最终状态，重复执行只测未完成项
 - `--rounds N` 的后几轮只重试 `network_error` 源，不重试 `passed` / `dead_domain` / `no_results`
 - 用 `--json` flag 输出结构化结果，方便 AI 解析进度和状态
@@ -46,7 +44,7 @@ cargo run -- full --rounds 5            # 续跑——已有缓存的源直接�
 
 ```
 src/
-├── main.rs          — CLI 入口（clap，preflight / test 子命令）
+├── main.rs          — CLI 入口（clap，full / status 子命令）
 ├── lib.rs           — 库导出，供集成测试使用
 ├── types.rs         — BookSource、规则结构体、枚举
 ├── preflight.rs     — 5 步预检分类管道
@@ -78,15 +76,11 @@ src/
 | 参数 | 说明 |
 |------|------|
 | `full` | 一键 preflight + test（推荐） |
-| `preflight` | 仅静态预检 |
-| `test` | 仅搜索测试（需先 preflight） |
 | `status` | 查看当前管道进度（支持 `--json`） |
 | `--json` | 全局 flag，输出 JSON Lines 到 stdout（AI 友好） |
 | `--force` | 忽略缓存，全部重新测试 |
-| `--retry-missed` | 仅重测之前失败的源 |
 | `--limit N` | 只测前 N 个源 |
 | `--rounds N` | 测试轮数，失败源每轮重试（默认 1） |
-| `--no-node` | 跳过 JS 源 |
 | `--concurrency N` | 并发数，默认 50 |
 
 ## Legado DSL

@@ -78,43 +78,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run static preflight checks (no network requests)
-    Preflight,
-
-    /// Run search tests on eligible sources
-    Test {
-        #[arg(short, long, default_value = "50")]
-        concurrency: usize,
-
-        #[arg(short, long, default_value = "15")]
-        timeout: u64,
-
-        /// Skip JS sources (no node required)
-        #[arg(long)]
-        no_node: bool,
-
-        /// Re-test all sources, ignoring cache
-        #[arg(long)]
-        force: bool,
-
-        /// Only re-test previously failed sources
-        #[arg(long)]
-        retry_missed: bool,
-
-        /// Number of test rounds. Failed sources are retried each round.
-        /// A source passes if it succeeds in any round (handles network flakiness).
-        #[arg(long, default_value = "1")]
-        rounds: u32,
-
-        /// Limit to first N sources (for quick tests)
-        #[arg(long)]
-        limit: Option<usize>,
-
-        /// Path to config.toml (optional; built-in defaults used if not specified)
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-
     /// Show current pipeline status from cache (no network)
     Status,
 
@@ -125,10 +88,6 @@ enum Commands {
 
         #[arg(short, long, default_value = "15")]
         timeout: u64,
-
-        /// Skip JS sources (no node required)
-        #[arg(long)]
-        no_node: bool,
 
         /// Re-test all sources, ignoring cache
         #[arg(long)]
@@ -241,91 +200,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        Commands::Preflight => {
-            json_event(&cli, serde_json::json!({"event": "phase", "phase": "preflight", "status": "started"}));
-
-            ensure_fresh_source(&input_path, &output_path)?;
-            let file = std::fs::File::open(&input_path)?;
-            let reader = std::io::BufReader::new(file);
-            let sources: Vec<types::BookSource> = serde_json::from_reader(reader)?;
-
-            let output = preflight::run(sources);
-
-            reporter::write_outputs(&output_path, &output, cli.json)?;
-
-            json_event(&cli, serde_json::json!({
-                "event": "preflight_summary",
-                "total_input": output.total_input,
-                "excluded": output.excluded,
-                "text_enabled": output.text_enabled,
-                "skipped": output.skipped.len(),
-                "explore_only": output.explore_only.len(),
-                "eligible": output.eligible.len(),
-                "breakdown": {
-                    "template": output.breakdown.template,
-                    "js_prefix": output.breakdown.js_prefix,
-                    "js_block": output.breakdown.js_block,
-                    "pure_url": output.breakdown.pure_url,
-                },
-            }));
-
-            if !cli.json {
-                println!("\n=== Preflight Summary ===");
-                println!("Total input:      {}", output.total_input);
-                println!("Excluded (non-text/disabled): {}", output.excluded);
-                println!("Text + enabled:   {}", output.text_enabled);
-                println!("Skipped:          {}", output.skipped.len());
-                println!("Explore only:     {}", output.explore_only.len());
-                println!("Eligible (test):  {}", output.eligible.len());
-                let b = &output.breakdown;
-                println!("  {{key}} template: {}", b.template);
-                println!("  @js: prefix:     {}", b.js_prefix);
-                println!("  <js> block:      {}", b.js_block);
-                println!("  Pure URL:        {}", b.pure_url);
-            }
-        }
-        Commands::Test {
-            concurrency, timeout, no_node, force, retry_missed, limit, config: config_path, rounds,
-        } => {
-            json_event(&cli, serde_json::json!({"event": "phase", "phase": "test", "status": "started"}));
-            ensure_fresh_source(&input_path, &output_path)?;
-
-            let test_config = build_test_config(
-                *concurrency, *timeout, *no_node, *force, *retry_missed, config_path,
-            )?;
-
-            if *force {
-                let cache_path = output_path.join("test_cache.db");
-                if cache_path.exists() {
-                    std::fs::remove_file(&cache_path)?;
-                }
-            }
-
-            let eligible_path = output_path.join("eligible.json");
-            if !eligible_path.exists() {
-                anyhow::bail!("eligible.json not found. Run `preflight` first.");
-            }
-
-            let eligible: Vec<types::BookSource> = {
-                let file = std::fs::File::open(&eligible_path)?;
-                let reader = std::io::BufReader::new(file);
-                serde_json::from_reader(reader)?
-            };
-
-            // Apply --limit
-            let eligible = if let Some(n) = limit {
-                let n = (*n).min(eligible.len());
-                tracing::info!("Limited to first {} sources", n);
-                eligible.into_iter().take(n).collect()
-            } else {
-                eligible
-            };
-
-            run_test_campaign(eligible, test_config, &output_path, cli.json, *rounds)?;
-        }
-
         Commands::Full {
-            concurrency, timeout, no_node, force, limit, config: config_path, rounds,
+            concurrency, timeout, force, limit, config: config_path, rounds,
         } => {
             json_event(&cli, serde_json::json!({"event": "phase", "phase": "full", "status": "started"}));
 
@@ -369,7 +245,7 @@ fn main() -> anyhow::Result<()> {
 
             // ── Phase 2: Build test config ──
             let test_config = build_test_config(
-                *concurrency, *timeout, *no_node, *force, false, config_path,
+                *concurrency, *timeout, *force, config_path,
             )?;
 
             let eligible = if let Some(n) = limit {
@@ -392,9 +268,7 @@ fn main() -> anyhow::Result<()> {
 fn build_test_config(
     concurrency: usize,
     timeout_secs: u64,
-    no_node: bool,
     force: bool,
-    retry_missed: bool,
     config_path: &Option<PathBuf>,
 ) -> anyhow::Result<tester::TestConfig> {
     let config_toml = load_config(config_path)?;
@@ -418,9 +292,8 @@ fn build_test_config(
         timeout_secs,
         test_books,
         generic_keywords: vec!["重生".into(), "系统".into(), "穿越".into()],
-        no_node,
         force,
-        retry_missed,
+
     })
 }
 
@@ -451,10 +324,7 @@ fn run_test_campaign(
     let rounds = rounds.max(1);
 
     for round in 1..=rounds {
-        let mut round_config = config.clone();
-        if round > 1 {
-            round_config.retry_missed = true;
-        }
+        let round_config = config.clone();
 
         let sources_to_test = if round > 1 {
             let db_path = output_path.join("test_cache.db");
