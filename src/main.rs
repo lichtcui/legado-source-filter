@@ -284,7 +284,7 @@ fn build_test_config(
 
 /// Run the full test campaign for an eligible set: N rounds of testing,
 /// dead-domain marking between rounds, final cumulative summary, and
-/// output file generation (filtered.json / missed.json / js_api.json).
+/// output file generation (filtered.json).
 fn run_test_campaign(
     eligible: Vec<types::BookSource>,
     config: tester::TestConfig,
