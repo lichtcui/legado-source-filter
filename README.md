@@ -47,6 +47,59 @@ cargo run -- status
 | `--json` | 全局 | 输出 JSON Lines 到 stdout，适合 AI 解析 |
 | `-o`, `--output DIR` | 全局 | 输出目录（默认 XDG_CACHE_HOME） |
 
+## 配置文件
+
+`--config PATH` 可指定自定义 TOML 配置文件。未指定时，工具按以下顺序查找：
+
+1. 项目根目录 `data/config.toml`
+2. 内置默认配置
+
+配置文件主要用于自定义搜索测试的关键词，格式如下：
+
+```toml
+[[search]]
+name = "玄鉴仙族"
+author = "季越人"
+# 起点中文网 - 2026年5月畅销榜第1
+
+[[search]]
+name = "修真界第一营销咖"
+author = "云霄桂月"
+# 晋江文学城 - 2026年十大热门小说第1
+
+[[search]]
+name = "无敌天命"
+author = "青鸾峰上"
+# 纵横中文网 - 2026年4月月票榜第1
+
+[[search]]
+name = "罪恶之城"
+author = "烟雨江南"
+# 17k小说网 - 推荐榜第1（1099万推荐）
+
+[[search]]
+name = "我不是戏神"
+author = "三九音域"
+# 番茄小说 - 2026年巅峰榜第1
+
+[[search]]
+name = "三国帝皇之万界征战"
+author = "无量功德"
+# 飞卢中文网 - 霸占天榜两年以上
+
+[[search]]
+name = "我真不是邪神走狗"
+author = "万劫火"
+# 刺猬猫 - 均订5.4万，全站原创首订记录
+
+[[search]]
+name = "大荒吞天诀"
+author = "铁马飞桥"
+# 七猫免费小说 - 310万在读，玄幻顶流
+```
+
+每个 `[[search]]` 条目指定一本书名和作者，测试时会被优先用作搜索关键词，覆盖通用的默认关键词。`#` 为注释行，仅用于说明，不影响运行。
+
 ## 输出文件
 
 输出目录默认位于 `~/.cache/legado-source-filter/`（可通过 `--output` 或 `XDG_CACHE_HOME` 环境变量修改）。
