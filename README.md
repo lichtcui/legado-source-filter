@@ -45,7 +45,6 @@ cargo run -- status
 | `--force` | full | 忽略缓存，全部重新测试 |
 | `--config PATH` | full | 指定 config.toml 路径（可选） |
 | `--json` | 全局 | 输出 JSON Lines 到 stdout，适合 AI 解析 |
-| `-i`, `--input PATH` | 全局 | 书源 JSON 路径（默认 XDG_DATA_HOME） |
 | `-o`, `--output DIR` | 全局 | 输出目录（默认 XDG_CACHE_HOME） |
 
 ## 输出文件

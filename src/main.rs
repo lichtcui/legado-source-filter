@@ -9,8 +9,7 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_CONFIG: &str = include_str!("../data/config.toml");
 
 fn resolve_input() -> PathBuf {
-    // Priority: 1) explicit --input flag (handled by CLI), 2) CWD data/*.json, 3) XDG default
-    // This is called only when --input is not given, to resolve a sensible default.
+    // Priority: 1) CWD data/*.json, 2) XDG default
     let xdg = {
         let home = || std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let base = std::env::var("XDG_DATA_HOME")
@@ -66,10 +65,6 @@ struct Cli {
     /// Emit machine-readable JSON Lines to stdout
     #[arg(long, global = true)]
     json: bool,
-
-    /// Path to the book sources JSON file (default: XDG_DATA_HOME/legado-source-filter/sources.json)
-    #[arg(short, long)]
-    input: Option<PathBuf>,
 
     /// Output directory (default: XDG_CACHE_HOME/legado-source-filter)
     #[arg(short, long)]
@@ -127,7 +122,7 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let input_path = cli.input.clone().unwrap_or_else(resolve_input);
+    let input_path = resolve_input();
     let output_path = cli.output.clone().unwrap_or_else(resolve_output);
 
     match &cli.command {
