@@ -54,15 +54,10 @@ cargo run -- status
 
 | 文件 | 说明 |
 |------|------|
-| `eligible.json` | 预检通过、待测试的书源列表 |
 | `filtered.json` | 测试通过的可用书源，直接导入 Legado |
-| `missed.json` | 测试失败的书源 |
-| `js_api.json` | 依赖 Legado 特有 JS API、无法外部测试的书源 |
-| `skipped.json` | 预检阶段跳过的书源及原因 |
-| `explore_only.json` | 仅支持「发现」功能、不支持搜索的书源 |
-| `report.json` | 结构化汇总报告（JSON 模式） |
-| `report.txt` | 人类可读的预检报告 |
+| `eligible.json` | 预检通过、待测试的书源列表 |
 | `test_cache.db` | SQLite 缓存，支持断点续测 |
+| `report.json` | 预检 + 测试结构化汇总报告 |
 
 ## 技术栈
 

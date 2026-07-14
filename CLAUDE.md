@@ -52,7 +52,7 @@ src/
 ├── search_url.rs    — 从 searchUrl 构造 HTTP 请求（{{key}}、POST、JS L1）
 ├── http_client.rs   — reqwest 封装（chardetng 编码探测 + encoding_rs 转码）
 ├── tester.rs        — 异步测试调度（tokio JoinSet + Semaphore）
-├── reporter.rs      — JSON / 文本报告输出
+├── reporter.rs      — JSON 报告输出
 ├── db.rs            — SQLite 缓存层（断点续测）
 ├── rule_dsl/        — Legado 自定义规则 DSL 解析器
 │   ├── parser.rs         — 词法分析器

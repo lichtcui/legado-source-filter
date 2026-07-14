@@ -212,7 +212,7 @@ fn main() -> anyhow::Result<()> {
             let reader = std::io::BufReader::new(file);
             let sources: Vec<types::BookSource> = serde_json::from_reader(reader)?;
             let preflight_out = preflight::run(sources);
-            reporter::write_outputs(&output_path, &preflight_out, cli.json)?;
+            reporter::write_outputs(&output_path, &preflight_out)?;
 
             json_event(&cli, serde_json::json!({
                 "event": "preflight_summary",
@@ -236,7 +236,7 @@ fn main() -> anyhow::Result<()> {
             if cache_path.exists() {
                 std::fs::remove_file(&cache_path)?;
             }
-            for f in &["filtered.json", "missed.json", "js_api.json"] {
+            for f in &["filtered.json"] {
                 let p = output_path.join(f);
                 if p.exists() {
                     std::fs::remove_file(&p)?;
@@ -434,21 +434,23 @@ fn run_test_campaign(
                 println!("{}", serde_json::to_string(&final_event).unwrap());
             }
 
-            // Always write report.json (structured output)
-            let report_json = serde_json::json!({
-                "summary": {
-                    "rounds": rounds,
-                    "total": eligible.len(),
-                    "passed": final_passed,
-                    "dead_domain": final_dead,
-                    "failed": final_failed,
-                    "js_api": final_js_api,
-                    "skipped": final_skipped,
-                    "untested": untested,
-                }
-            });
+            // Merge test summary into report.json (written by preflight)
             let report_path = output_path.join("report.json");
-            let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report_json)?);
+            let mut report: serde_json::Value = std::fs::read_to_string(&report_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or(serde_json::json!({}));
+            report["test_summary"] = serde_json::json!({
+                "rounds": rounds,
+                "total": eligible.len(),
+                "passed": final_passed,
+                "dead_domain": final_dead,
+                "failed": final_failed,
+                "js_api": final_js_api,
+                "skipped": final_skipped,
+                "untested": untested,
+            });
+            let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report)?);
 
             if !json_output {
                 println!("\n=== Final Summary ({} rounds) ===", rounds);
@@ -481,35 +483,7 @@ fn run_test_campaign(
                 tracing::info!("Wrote {} passed sources to filtered.json", passed_sources.len());
             }
 
-            let missed_sources: Vec<_> = eligible.iter()
-                .filter(|s| {
-                    cache.check(&s.bookSourceUrl, &s.bookSourceName)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(st, _)| st == "failed" || st == "skipped")
-                })
-                .cloned()
-                .collect();
-            if !missed_sources.is_empty() {
-                let missed_path = output_path.join("missed.json");
-                std::fs::write(&missed_path, serde_json::to_string_pretty(&missed_sources)?)?;
-                tracing::info!("Wrote {} missed sources to missed.json", missed_sources.len());
-            }
 
-            let js_api_sources: Vec<_> = eligible.iter()
-                .filter(|s| {
-                    cache.check(&s.bookSourceUrl, &s.bookSourceName)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|(st, _)| st == "js_api")
-                })
-                .cloned()
-                .collect();
-            if !js_api_sources.is_empty() {
-                let js_api_path = output_path.join("js_api.json");
-                std::fs::write(&js_api_path, serde_json::to_string_pretty(&js_api_sources)?)?;
-                tracing::info!("Wrote {} JS API sources to js_api.json", js_api_sources.len());
-            }
         }
     }
 
@@ -677,8 +651,7 @@ fn discover_source_url(html_str: &str) -> anyhow::Result<String> {
 }
 
 fn clear_output_cache(output_dir: &std::path::Path) {
-    for entry in &["test_cache.db", "eligible.json", "filtered.json", "missed.json",
-                   "skipped.json", "explore_only.json", "js_api.json", "report.txt"] {
+    for entry in &["test_cache.db", "eligible.json", "filtered.json"] {
         let path = output_dir.join(entry);
         if path.exists() {
             let _ = std::fs::remove_file(&path);
